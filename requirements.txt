@@ -1,0 +1,5 @@
+streamlit>=1.30
+pandas
+openpyxl
+python-docx
+xlrd
