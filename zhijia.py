@@ -28,28 +28,49 @@ ITEM_DECLARATION_TEMPLATES = {
         "code": "8207300090",
         "template_lines": [
             "．五金冲压模具 8207300090",
-            "1.	品牌类型:无品牌 2.出口享惠情况:不享惠  3.用途:冲压用  4.材质:钢铁制  5.种类:冲压模 6.品牌:无牌  7.是否带有工作部件:否  8.型号: {model}",
+            "1.     品牌类型:无品牌 2.出口享惠情况:不享惠  3.用途:冲压用  4.材质:钢铁制  5.种类:冲压模 6.品牌:无牌  7.是否带有工作部件:否  8.型号: {model}",
+        ],
+    },
+    "机械手自动传送机/用于物料传": {
+        "code": "8428909090",
+        "template_lines": [
+            "．机械手自动传送机/用于物料传  8428909090",
+            "1.     品牌类型:无品牌 2.出口享惠情况:不享惠  3.品牌:无牌 4.用途:用于物料传送 5.型号: {model}",
         ],
     },
     "检具": {
         "code": "9031809090",
         "template_lines": [
             "．检具 9031809090",
-            "1.	品牌类型:无品牌 2.出口享惠情况:不享惠 3.用途:检测模具加工出产品的精密度 4.原理: 通过CNC加工产品的3D模型与该批模具生产的产品进行检测，测量   5.功能: 用于测量,检验模具样品用  6.品牌:无牌  7.型号: {model}",
+            "1.品牌类型:无品牌 2.出口享惠情况:不享惠 3.用途:检测模具加工出产品的精密度 4.原理: 通过CNC加工产品的3D模型与该批模具生产的产品进行检测，测量   5.功能: 用于测量,检验模具样品用  6.品牌:无牌  7.型号: {model}",
+        ],
+    },
+    "总成检具": {
+        "code": "9031809090",
+        "template_lines": [
+            "．总成检具 9031809090",
+            "1.品牌类型:无品牌 2.出口享惠情况:不享惠 3.用途:检测模具加工出产品的精密度 4.原理: 通过CNC加工产品的3D模型与该批模具生产的产品进行检测，测量   5.功能: 用于测量,检验模具样品用  6.品牌:无牌  7.型号: {model}",
         ],
     },
     "检具推车": {
         "code": "8716800000",
         "template_lines": [
             "．检具推车  8716800000",
-            "1.品牌类型:无品牌    2.出口享惠情况:不享惠 .  3.型号：{model}",
+            "1.品牌类型:无品牌    2.出口享惠情况:不享惠 .  3.型号: {model}",
+        ],
+    },
+    "五金冲压模具配件/冲头.入子": {
+        "code": "8207300090",
+        "template_lines": [
+            "．8207300090五金冲压模具配件/冲头.入子",
+            "1.品牌类型:无品牌 2.出口享惠情况:不享惠  3.用途: 五金冲压模具用  4.材质:钢铁制  5.种类: 冲头.入子 6.品牌:无牌  7.是否带有工作部件:否  8.型号: {model}",
         ],
     },
     "汽车五金配件/用于支架系统": {
         "code": "8708299000",
         "template_lines": [
             "．汽车五金配件/用于支架系统  8708299000",
-            "1.	品牌类型:无品牌 2.出口享惠情况:不享惠 3.品牌:无牌 4.适用车型:通用 5.型号: {model}",
+            "1.品牌类型:无品牌 2.出口享惠情况:不享惠  3.品牌:无牌 4.适用车型:通用 5.零部件编号: {model}",
         ],
     },
 }
@@ -84,35 +105,52 @@ def format_date(date_str):
 
 
 def get_item_category(chinese_name):
+    """根据发票中提取的中文品名，匹配对应的申报模版分类"""
     if "\n" in chinese_name:
         parts = [p.strip() for p in chinese_name.split("\n") if p.strip()]
         main_name = parts[1] if len(parts) > 1 and re.search(r'[\u4e00-\u9fa5]', parts[1]) else parts[0]
     else:
         main_name = chinese_name
-    if "五金冲压模具" in main_name or "Stamping die" in chinese_name:
-        return "五金冲压模具"
-    elif "检具" in main_name and "推车" not in main_name:
-        return "检具"
-    elif "检具推车" in main_name or "Checking fixture cart" in chinese_name:
+        
+    lower_name = chinese_name.lower()
+    main_lower = main_name.lower()
+
+    # 注意：更具体的关键词需要放在前面优先匹配
+    if "机械手" in main_lower or "传送机" in main_lower or "robot" in lower_name:
+        return "机械手自动传送机/用于物料传"
+    elif "总成检具" in main_lower or "assembly fixture" in lower_name:
+        return "总成检具"
+    elif "冲头" in main_lower or "入子" in main_lower or ("模具配件" in main_lower):
+        return "五金冲压模具配件/冲头.入子"
+    elif "推车" in main_lower or "cart" in lower_name or ("检具" in main_lower and "车" in main_lower):
         return "检具推车"
-    elif "汽车五金配件" in main_name or "支架系统" in main_name:
+    elif "检具" in main_lower:
+        return "检具"
+    elif "冲压模具" in main_lower or "stamping die" in lower_name:
+        return "五金冲压模具"
+    elif "汽车五金配件" in main_lower or "支架系统" in main_lower:
         return "汽车五金配件/用于支架系统"
+        
     return None
 
 
 def get_unit_str(chinese_name):
+    """根据品名自动识别并补充计量单位"""
     if "\n" in chinese_name:
         parts = [p.strip() for p in chinese_name.split("\n") if p.strip()]
         main_name = parts[1] if len(parts) > 1 and re.search(r'[\u4e00-\u9fa5]', parts[1]) else parts[0]
     else:
         main_name = chinese_name
     lower_name = main_name.lower()
+    
     if "推车" in lower_name or "cart" in lower_name:
         return "辆"
-    elif ("检具" in lower_name and "推车" not in lower_name) or "五金冲压模具" in lower_name or "stamping die" in lower_name:
-        return "套"
-    elif "汽车五金配件" in lower_name or "支架系统" in lower_name:
+    elif "机械手" in lower_name or "传送机" in lower_name or "robot" in lower_name:
+        return "台"
+    elif "配件" in lower_name or "支架" in lower_name or "冲头" in lower_name or "入子" in lower_name:
         return "个"
+    elif "检具" in lower_name or "模具" in lower_name or "die" in lower_name:
+        return "套"
     return "套"
 
 
@@ -466,6 +504,7 @@ def create_declaration_elements(invoice_data, output_dir):
 
             p2 = doc.add_paragraph()
             p2.paragraph_format.space_after = Pt(0)
+            # 在这里，如果识别出来是【汽车五金配件/用于支架系统】，它自然会去套用对应的 5.零部件编号:{model}
             p2.add_run(tpl["template_lines"][1].format(model=model))
             doc.add_paragraph().paragraph_format.space_after = Pt(10)
 
