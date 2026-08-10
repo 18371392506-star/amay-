@@ -23,7 +23,6 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 STATIC_DIR = os.path.join(BASE_DIR, "static", "zhijia")
 
 # --- 全局模板定义 ---
-# 移除了大标题前多余的“．”
 ITEM_DECLARATION_TEMPLATES = {
     "五金冲压模具": {
         "code": "8207300090",
@@ -590,44 +589,39 @@ def modify_sales_confirmation(invoice_data, template_path, output_dir, user_inpu
         fmt_date = format_date(invoice_data["date"])
         num_items = len(data)
 
-        # ============== 动态下移“成交方式”文本到最后一行 ==============
-        target_table = None
-        first_row_idx = -1
-        last_row_idx = -1
-        incoterm_col = -1
-
-        # 查找目标行
+        # ============== 彻底修复：动态下移“成交方式”文本到最后一行 ==============
+        cif_moved = False
         for t in doc.tables:
             for i, row in enumerate(t.rows):
-                row_text = "".join(c.text for c in row.cells)
-                if "QualityNo.1" in row_text:
-                    first_row_idx = i
-                    target_table = t
-                if f"QualityNo.{num_items}" in row_text:
-                    last_row_idx = i
-            if target_table:
-                break
-
-        # 如果商品数大于 1，才需要将 CIF 从第一行清除并移动到最后一行
-        if target_table and first_row_idx != -1 and last_row_idx != -1 and first_row_idx != last_row_idx:
-            # 找到含有 CIF 的列 (通常是第6列)
-            for j, cell in enumerate(target_table.rows[first_row_idx].cells):
-                if "CIF" in cell.text or "成交方式" in cell.text:
-                    incoterm_col = j
-                    # 仅清除这一行里的 CIF 文本段落
-                    for p in cell.paragraphs:
-                        if "CIF" in p.text or "成交方式" in p.text:
-                            p.clear()
+                row_str = "".join(c.text for c in row.cells)
+                # 先定位到商品开始的第一行（寻找 QualityNo.1 占位符）
+                if "QualityNo.1" in row_str:
+                    for j, cell in enumerate(row.cells):
+                        # 在这一行找到包含 CIF 或 成交方式 的那一列
+                        if "CIF" in cell.text or "成交方式" in cell.text:
+                            # 1. 暴力清空第一行这个格子里的文本，防止它残留
+                            for p in cell.paragraphs:
+                                if "CIF" in p.text or "成交方式" in p.text:
+                                    p.text = "" 
+                            
+                            # 2. 精确定位到最后一件商品所在的行
+                            last_idx = i + (num_items - 1)
+                            if last_idx < len(t.rows):
+                                dest_cell = t.rows[last_idx].cells[j]
+                                # 3. 直接将选择的条款写进最后一个商品的格子里
+                                dest_cell.text = f"成交方式:{incoterms}"
+                                # 顺便统一一下字体防止排版难看
+                                if dest_cell.paragraphs:
+                                    for r in dest_cell.paragraphs[0].runs:
+                                        r.font.name = "Microsoft YaHei"
+                                        r.font.size = Pt(10.5)
+                                        r.element.get_or_add_rPr().get_or_add_rFonts().set(qn('w:eastAsia'), "Microsoft YaHei")
+                            cif_moved = True
+                            break
+                if cif_moved:
                     break
-            
-            # 在最后一行的对应列，直接写入当前的真实成交方式
-            if incoterm_col != -1:
-                dest_cell = target_table.rows[last_row_idx].cells[incoterm_col]
-                p = dest_cell.paragraphs[0] if dest_cell.paragraphs else dest_cell.add_paragraph()
-                r = p.add_run(f"成交方式:{incoterms}")
-                r.font.name = "Microsoft YaHei"
-                r.font.size = Pt(10.5)
-                r.element.get_or_add_rPr().get_or_add_rFonts().set(qn('w:eastAsia'), "Microsoft YaHei")
+            if cif_moved:
+                break
 
         # ============== 构建常规替换字典 ==============
         replacements = {
@@ -869,8 +863,13 @@ def create_export_declaration(invoice_data, template_path, output_dir, user_inpu
 
         rows_to_delete = max_item_rows_in_template - num_items
         if rows_to_delete > 0:
-            delete_start_row_num = start_row + num_items
-            ws.delete_rows(delete_start_row_num, amount=rows_to_delete)
+            # ============== 彻底修复：隐藏而不是删除多余空行，完美保留底部格式 ==============
+            for r_idx in range(start_row + num_items, start_row + max_item_rows_in_template):
+                # 将这一行设为隐藏（在打印和预览时它就像不存在一样，底部的行会自动“吸附”上来）
+                ws.row_dimensions[r_idx].hidden = True
+                # 同时把这行的内容清空（防止某些看不见的脏数据）
+                for c_idx in range(1, 15):
+                    ws.cell(row=r_idx, column=c_idx).value = None
 
         fname = f"致嘉_出口报关单_{get_file_naming_date_str(invoice_data['date'])}.xlsx"
         fpath = os.path.join(output_dir, fname)
