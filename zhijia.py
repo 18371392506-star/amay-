@@ -589,39 +589,31 @@ def modify_sales_confirmation(invoice_data, template_path, output_dir, user_inpu
         fmt_date = format_date(invoice_data["date"])
         num_items = len(data)
 
-        # ============== 彻底修复：动态下移“成交方式”文本到最后一行 ==============
-        cif_moved = False
+        # ============== 彻底修复：使用“文本追踪法”精确定位行，杜绝错位 ==============
+        target_first = "QualityNo.1"
+        target_last = f"QualityNo.{num_items}"
+
         for t in doc.tables:
-            for i, row in enumerate(t.rows):
+            for row in t.rows:
+                # 获取整行的文本，用来判断当前是哪一件商品所在的行
                 row_str = "".join(c.text for c in row.cells)
-                # 先定位到商品开始的第一行（寻找 QualityNo.1 占位符）
-                if "QualityNo.1" in row_str:
-                    for j, cell in enumerate(row.cells):
-                        # 在这一行找到包含 CIF 或 成交方式 的那一列
-                        if "CIF" in cell.text or "成交方式" in cell.text:
-                            # 1. 暴力清空第一行这个格子里的文本，防止它残留
-                            for p in cell.paragraphs:
-                                if "CIF" in p.text or "成交方式" in p.text:
-                                    p.text = "" 
-                            
-                            # 2. 精确定位到最后一件商品所在的行
-                            last_idx = i + (num_items - 1)
-                            if last_idx < len(t.rows):
-                                dest_cell = t.rows[last_idx].cells[j]
-                                # 3. 直接将选择的条款写进最后一个商品的格子里
-                                dest_cell.text = f"成交方式:{incoterms}"
-                                # 顺便统一一下字体防止排版难看
-                                if dest_cell.paragraphs:
-                                    for r in dest_cell.paragraphs[0].runs:
-                                        r.font.name = "Microsoft YaHei"
-                                        r.font.size = Pt(10.5)
-                                        r.element.get_or_add_rPr().get_or_add_rFonts().set(qn('w:eastAsia'), "Microsoft YaHei")
-                            cif_moved = True
-                            break
-                if cif_moved:
-                    break
-            if cif_moved:
-                break
+                
+                # 1. 专门处理第一件商品行：如果总商品数>1，则清空最后一列原本静态的“成交方式:CIF”
+                if target_first in row_str and num_items > 1:
+                    last_cell = row.cells[-1] # -1 代表表格的最后一列（装运期列）
+                    if "CIF" in last_cell.text or "成交方式" in last_cell.text:
+                        last_cell.text = "" # 直接把这一格清空
+                
+                # 2. 专门处理最后一件商品行：把用户选的成交方式写入它的最后一列
+                if target_last in row_str:
+                    last_cell = row.cells[-1]
+                    last_cell.text = f"成交方式:{incoterms}"
+                    # 重新应用一下字体格式防止突兀
+                    if last_cell.paragraphs:
+                        for r in last_cell.paragraphs[0].runs:
+                            r.font.name = "Microsoft YaHei"
+                            r.font.size = Pt(10.5)
+                            r.element.get_or_add_rPr().get_or_add_rFonts().set(qn('w:eastAsia'), "Microsoft YaHei")
 
         # ============== 构建常规替换字典 ==============
         replacements = {
@@ -865,9 +857,7 @@ def create_export_declaration(invoice_data, template_path, output_dir, user_inpu
         if rows_to_delete > 0:
             # ============== 彻底修复：隐藏而不是删除多余空行，完美保留底部格式 ==============
             for r_idx in range(start_row + num_items, start_row + max_item_rows_in_template):
-                # 将这一行设为隐藏（在打印和预览时它就像不存在一样，底部的行会自动“吸附”上来）
                 ws.row_dimensions[r_idx].hidden = True
-                # 同时把这行的内容清空（防止某些看不见的脏数据）
                 for c_idx in range(1, 15):
                     ws.cell(row=r_idx, column=c_idx).value = None
 
