@@ -589,31 +589,79 @@ def modify_sales_confirmation(invoice_data, template_path, output_dir, user_inpu
         fmt_date = format_date(invoice_data["date"])
         num_items = len(data)
 
-        # ============== 彻底修复：使用“文本追踪法”精确定位行，杜绝错位 ==============
-        target_first = "QualityNo.1"
-        target_last = f"QualityNo.{num_items}"
+        # ============== 新定位逻辑：根据“品 号 Quality No”与“装运期 Time of Shipment”确定单元格 ==============
+        target_header_keywords = ["品 号", "Quality No"]  # 表头品号列关键字
+        target_ship_keywords = ["装运期", "Time of Shipment"]  # 装运期列关键字
 
-        for t in doc.tables:
-            for row in t.rows:
-                # 获取整行的文本，用来判断当前是哪一件商品所在的行
-                row_str = "".join(c.text for c in row.cells)
-                
-                # 1. 专门处理第一件商品行：如果总商品数>1，则清空最后一列原本静态的“成交方式:CIF”
-                if target_first in row_str and num_items > 1:
-                    last_cell = row.cells[-1] # -1 代表表格的最后一列（装运期列）
-                    if "CIF" in last_cell.text or "成交方式" in last_cell.text:
-                        last_cell.text = "" # 直接把这一格清空
-                
-                # 2. 专门处理最后一件商品行：把用户选的成交方式写入它的最后一列
-                if target_last in row_str:
-                    last_cell = row.cells[-1]
-                    last_cell.text = f"成交方式:{incoterms}"
-                    # 重新应用一下字体格式防止突兀
-                    if last_cell.paragraphs:
-                        for r in last_cell.paragraphs[0].runs:
-                            r.font.name = "Microsoft YaHei"
-                            r.font.size = Pt(10.5)
-                            r.element.get_or_add_rPr().get_or_add_rFonts().set(qn('w:eastAsia'), "Microsoft YaHei")
+        for table in doc.tables:
+            header_row_idx = None
+            quality_col_idx = None
+            shipment_col_idx = None
+
+            # 1. 定位表头行和列索引
+            for r_idx, row in enumerate(table.rows):
+                row_text = " ".join(cell.text for cell in row.cells)
+                # 同时包含“品 号”和“装运期”
+                if (any(kw in row_text for kw in target_header_keywords) and
+                    any(kw in row_text for kw in target_ship_keywords)):
+                    header_row_idx = r_idx
+                    # 找出具体列索引
+                    for c_idx, cell in enumerate(row.cells):
+                        cell_text = cell.text.strip()
+                        if any(kw in cell_text for kw in target_header_keywords):
+                            quality_col_idx = c_idx
+                        if any(kw in cell_text for kw in target_ship_keywords):
+                            shipment_col_idx = c_idx
+                    break
+
+            if header_row_idx is None or quality_col_idx is None or shipment_col_idx is None:
+                continue
+
+            # 2. 扫描品号列，找到最大数字所在的行
+            max_num = 0
+            max_row = header_row_idx + 1  # 默认数据起始行
+            for r_idx in range(header_row_idx + 1, len(table.rows)):
+                try:
+                    cell_text = table.cell(r_idx, quality_col_idx).text.strip()
+                    # 提取数字，例如 "QualityNo.1" -> 1
+                    numbers = re.findall(r"\d+", cell_text)
+                    if numbers:
+                        val = int(numbers[-1])  # 取最后一个数字作为品号
+                        if val > max_num:
+                            max_num = val
+                            max_row = r_idx
+                except Exception:
+                    continue
+
+            # 如果没找到任何数字（例如只有表头），跳过
+            if max_num == 0:
+                continue
+
+            # 3. 清空“装运期”列除表头外的所有单元格
+            for r_idx in range(header_row_idx + 1, len(table.rows)):
+                shipment_cell = table.cell(r_idx, shipment_col_idx)
+                # 清除原有内容（无论是否有合并，直接清空文本）
+                shipment_cell.text = ""
+
+            # 4. 在最大数字所在行写入成交方式，并设置字体
+            target_cell = table.cell(max_row, shipment_col_idx)
+            target_cell.text = ""  # 确保清空
+            p = target_cell.paragraphs[0]
+            p.clear()
+            run = p.add_run(f"成交方式:{incoterms}")
+            # 字体设置：英文加粗 Times New Roman 8号，中文加粗宋体 8号
+            run.font.name = "Times New Roman"
+            run.font.size = Pt(8)
+            run.font.bold = True
+            # 设置中文字体为宋体
+            rPr = run._element.get_or_add_rPr()
+            rFonts = rPr.find(qn('w:rFonts'))
+            if rFonts is None:
+                rFonts = rPr.makeelement(qn('w:rFonts'), {})
+                rPr.insert(0, rFonts)
+            rFonts.set(qn('w:eastAsia'), '宋体')
+            # 对齐方式设置为居中（美观）
+            p.alignment = WD_ALIGN_PARAGRAPH.CENTER
 
         # ============== 构建常规替换字典 ==============
         replacements = {
