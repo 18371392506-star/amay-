@@ -23,53 +23,54 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 STATIC_DIR = os.path.join(BASE_DIR, "static", "zhijia")
 
 # --- 全局模板定义 ---
+# 移除了大标题前多余的“．”
 ITEM_DECLARATION_TEMPLATES = {
     "五金冲压模具": {
         "code": "8207300090",
         "template_lines": [
-            "．五金冲压模具 8207300090",
+            "五金冲压模具 8207300090",
             "1.     品牌类型:无品牌 2.出口享惠情况:不享惠  3.用途:冲压用  4.材质:钢铁制  5.种类:冲压模 6.品牌:无牌  7.是否带有工作部件:否  8.型号: {model}",
         ],
     },
     "机械手自动传送机/用于物料传送": {
         "code": "8428909090",
         "template_lines": [
-            "．机械手自动传送机/用于物料传  8428909090",
+            "机械手自动传送机/用于物料传  8428909090",
             "1.     品牌类型:无品牌 2.出口享惠情况:不享惠  3.品牌:无牌 4.用途:用于物料传送 5.型号: {model}",
         ],
     },
     "检具": {
         "code": "9031809090",
         "template_lines": [
-            "．检具 9031809090",
+            "检具 9031809090",
             "1.品牌类型:无品牌 2.出口享惠情况:不享惠 3.用途:检测模具加工出产品的精密度 4.原理: 通过CNC加工产品的3D模型与该批模具生产的产品进行检测，测量   5.功能: 用于测量,检验模具样品用  6.品牌:无牌  7.型号: {model}",
         ],
     },
     "总成检具": {
         "code": "9031809090",
         "template_lines": [
-            "．总成检具 9031809090",
+            "总成检具 9031809090",
             "1.品牌类型:无品牌 2.出口享惠情况:不享惠 3.用途:检测模具加工出产品的精密度 4.原理: 通过CNC加工产品的3D模型与该批模具生产的产品进行检测，测量   5.功能: 用于测量,检验模具样品用  6.品牌:无牌  7.型号: {model}",
         ],
     },
     "检具推车": {
         "code": "8716800000",
         "template_lines": [
-            "．检具推车  8716800000",
+            "检具推车  8716800000",
             "1.品牌类型:无品牌    2.出口享惠情况:不享惠 .  3.型号: {model}",
         ],
     },
     "五金冲压模具配件/冲头.入子": {
         "code": "8207300090",
         "template_lines": [
-            "．8207300090五金冲压模具配件/冲头.入子",
+            "8207300090五金冲压模具配件/冲头.入子",
             "1.品牌类型:无品牌 2.出口享惠情况:不享惠  3.用途: 五金冲压模具用  4.材质:钢铁制  5.种类: 冲头.入子 6.品牌:无牌  7.是否带有工作部件:否  8.型号: {model}",
         ],
     },
     "汽车五金配件/用于支架系统": {
         "code": "8708299000",
         "template_lines": [
-            "．汽车五金配件/用于支架系统  8708299000",
+            "汽车五金配件/用于支架系统  8708299000",
             "1.品牌类型:无品牌 2.出口享惠情况:不享惠  3.品牌:无牌 4.适用车型:通用 5.零部件编号: {model}",
         ],
     },
@@ -115,7 +116,6 @@ def get_item_category(chinese_name):
     lower_name = chinese_name.lower()
     main_lower = main_name.lower()
 
-    # 注意：更具体的关键词需要放在前面优先匹配
     if "机械手" in main_lower or "传送机" in main_lower or "robot" in lower_name:
         return "机械手自动传送机/用于物料传送"
     elif "总成检具" in main_lower or "assembly fixture" in lower_name:
@@ -432,7 +432,6 @@ def read_invoice_data(file_path):
 
         data = temp_data_storage
 
-        # ============== 交点提取 1: 总金额由“总价”列与“总计”行交点精确提取 ==============
         total_amount_col = -1
         total_amount_row = -1
         for i in range(len(invoice_df)):
@@ -457,7 +456,6 @@ def read_invoice_data(file_path):
         if total_amount <= 0:
             total_amount = temp_total_amount
 
-        # ============== 交点提取 2: 件数(箱数)由装箱单“箱数”列与“总计”行交点精确提取 ==============
         total_packages = 0
         try:
             pack_sheet_name = None
@@ -583,7 +581,6 @@ def modify_sales_confirmation(invoice_data, template_path, output_dir, user_inpu
         incoterms = user_inputs.get("incoterms", "CIF")
         currency_type = user_inputs.get("currency", "EUR")
         
-        # 获取前端填写的买方名称
         buyer_name = user_inputs.get("buyer_name", "香港致达五金制品有限公司")
 
         currency_code_display = "EUR" if currency_type == "EUR" else "USD"
@@ -591,10 +588,51 @@ def modify_sales_confirmation(invoice_data, template_path, output_dir, user_inpu
 
         total_str = f"{currency_code_display} {invoice_data['total_amount']:,.2f}"
         fmt_date = format_date(invoice_data["date"])
+        num_items = len(data)
 
+        # ============== 动态下移“成交方式”文本到最后一行 ==============
+        target_table = None
+        first_row_idx = -1
+        last_row_idx = -1
+        incoterm_col = -1
+
+        # 查找目标行
+        for t in doc.tables:
+            for i, row in enumerate(t.rows):
+                row_text = "".join(c.text for c in row.cells)
+                if "QualityNo.1" in row_text:
+                    first_row_idx = i
+                    target_table = t
+                if f"QualityNo.{num_items}" in row_text:
+                    last_row_idx = i
+            if target_table:
+                break
+
+        # 如果商品数大于 1，才需要将 CIF 从第一行清除并移动到最后一行
+        if target_table and first_row_idx != -1 and last_row_idx != -1 and first_row_idx != last_row_idx:
+            # 找到含有 CIF 的列 (通常是第6列)
+            for j, cell in enumerate(target_table.rows[first_row_idx].cells):
+                if "CIF" in cell.text or "成交方式" in cell.text:
+                    incoterm_col = j
+                    # 仅清除这一行里的 CIF 文本段落
+                    for p in cell.paragraphs:
+                        if "CIF" in p.text or "成交方式" in p.text:
+                            p.clear()
+                    break
+            
+            # 在最后一行的对应列，直接写入当前的真实成交方式
+            if incoterm_col != -1:
+                dest_cell = target_table.rows[last_row_idx].cells[incoterm_col]
+                p = dest_cell.paragraphs[0] if dest_cell.paragraphs else dest_cell.add_paragraph()
+                r = p.add_run(f"成交方式:{incoterms}")
+                r.font.name = "Microsoft YaHei"
+                r.font.size = Pt(10.5)
+                r.element.get_or_add_rPr().get_or_add_rFonts().set(qn('w:eastAsia'), "Microsoft YaHei")
+
+        # ============== 构建常规替换字典 ==============
         replacements = {
             "Company1": invoice_data["company_name"],
-            "香港致达五金制品有限公司": buyer_name,  # 替换模版中的固定文字
+            "香港致达五金制品有限公司": buyer_name,
             "2025年11月29日": fmt_date,
             "ZTD20251129002": invoice_data["contract_number"],
             "destinnation1": invoice_data["destination"],
@@ -603,6 +641,12 @@ def modify_sales_confirmation(invoice_data, template_path, output_dir, user_inpu
             "EUR": currency_replacer,
         }
 
+        # 针对不是默认买方名称，删除预设的地址和电话
+        if buyer_name != "香港致达五金制品有限公司":
+            replacements["Telephone：00852-3165147"] = ""
+            replacements["Telephone:00852-3165147"] = ""
+            replacements["香港九龙旺角烟厂街9号兴发商业大厦2201室"] = ""
+
         if currency_type == "USD":
             replacements["Unit Price/EUR"] = "Unit Price/USD"
             replacements["Amount (EUR)"] = "Amount (USD)"
@@ -610,11 +654,11 @@ def modify_sales_confirmation(invoice_data, template_path, output_dir, user_inpu
             replacements["Unit Price/USD"] = "Unit Price/EUR"
             replacements["Amount (USD)"] = "Amount (EUR)"
 
-        for i in range(1, len(data) + 30):
+        for i in range(1, num_items + 30):
             idx = i - 1
             k_no, k_nm, k_qt, k_pr, k_am = f"QualityNo.{i}", f"Name{i}", f"Quantity{i}", f"UnitPrice{i}", f"Amount{i}"
 
-            if i <= len(data):
+            if i <= num_items:
                 item = data[idx]
                 c_name = str(item[0]) if item[0] else ""
                 disp_name = c_name.split("\n")[1].strip() if "\n" in c_name and len(c_name.split("\n")) > 1 else c_name
@@ -728,7 +772,6 @@ def create_export_declaration(invoice_data, template_path, output_dir, user_inpu
         gross_weight = invoice_data.get("gross_weight", 0)
         net_weight = invoice_data.get("net_weight", 0)
         
-        # 获取提取到的真实箱数/件数
         total_packages = invoice_data.get("total_packages", len(data))
 
         incoterms = user_inputs.get("incoterms", "CIF")
@@ -750,7 +793,7 @@ def create_export_declaration(invoice_data, template_path, output_dir, user_inpu
             "ZTD20260202001": invoice_data["contract_number"],
             "中国香港": trade_country,
             "胶合板箱": pack_type,
-            "件数:6件": f"件数:{total_packages}件",  # 使用精确提取的件数
+            "件数:6件": f"件数:{total_packages}件",
             "706.5": f"{gross_weight:.2f}",
             "580": f"{net_weight:.2f}",
             "毛重: 706.5 KGS": f"毛重: {gross_weight:.2f} KGS",
@@ -856,7 +899,6 @@ def render():
 
     st.markdown("**2. 填写单证信息**")
     
-    # 增加买方名称输入框
     c1, c2 = st.columns(2)
     buyer_name_raw = c1.text_input("买方名称： (成交确认书)", key="zhijia_buyer", placeholder="默认: 香港致达五金制品有限公司")
     consignee = c2.text_input("境外收货人 (出口报关单)", key="zhijia_consignee", placeholder="例如: ABC Company")
@@ -912,7 +954,6 @@ def render():
                     "found_weights": invoice_data["found_weights"],
                 }
                 
-                # 买方名称默认逻辑
                 buyer_name = buyer_name_raw.strip() if buyer_name_raw.strip() else "香港致达五金制品有限公司"
 
                 user_inputs = {
