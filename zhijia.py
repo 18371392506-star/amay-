@@ -601,11 +601,9 @@ def modify_sales_confirmation(invoice_data, template_path, output_dir, user_inpu
             # 1. 定位表头行和列索引
             for r_idx, row in enumerate(table.rows):
                 row_text = " ".join(cell.text for cell in row.cells)
-                # 同时包含“品 号”和“装运期”
                 if (any(kw in row_text for kw in target_header_keywords) and
                     any(kw in row_text for kw in target_ship_keywords)):
                     header_row_idx = r_idx
-                    # 找出具体列索引
                     for c_idx, cell in enumerate(row.cells):
                         cell_text = cell.text.strip()
                         if any(kw in cell_text for kw in target_header_keywords):
@@ -622,46 +620,49 @@ def modify_sales_confirmation(invoice_data, template_path, output_dir, user_inpu
             max_row = header_row_idx + 1  # 默认数据起始行
             for r_idx in range(header_row_idx + 1, len(table.rows)):
                 try:
-                    cell_text = table.cell(r_idx, quality_col_idx).text.strip()
-                    # 提取数字，例如 "QualityNo.1" -> 1
+                    # 检查列索引是否在该行范围内
+                    row_cells = table.rows[r_idx].cells
+                    if quality_col_idx >= len(row_cells):
+                        continue
+                    cell_text = row_cells[quality_col_idx].text.strip()
                     numbers = re.findall(r"\d+", cell_text)
                     if numbers:
-                        val = int(numbers[-1])  # 取最后一个数字作为品号
+                        val = int(numbers[-1])
                         if val > max_num:
                             max_num = val
                             max_row = r_idx
                 except Exception:
                     continue
 
-            # 如果没找到任何数字（例如只有表头），跳过
             if max_num == 0:
                 continue
 
             # 3. 清空“装运期”列除表头外的所有单元格
             for r_idx in range(header_row_idx + 1, len(table.rows)):
-                shipment_cell = table.cell(r_idx, shipment_col_idx)
-                # 清除原有内容（无论是否有合并，直接清空文本）
-                shipment_cell.text = ""
+                row_cells = table.rows[r_idx].cells
+                if shipment_col_idx < len(row_cells):
+                    shipment_cell = row_cells[shipment_col_idx]
+                    shipment_cell.text = ""
 
             # 4. 在最大数字所在行写入成交方式，并设置字体
-            target_cell = table.cell(max_row, shipment_col_idx)
-            target_cell.text = ""  # 确保清空
-            p = target_cell.paragraphs[0]
-            p.clear()
-            run = p.add_run(f"成交方式:{incoterms}")
-            # 字体设置：英文加粗 Times New Roman 8号，中文加粗宋体 8号
-            run.font.name = "Times New Roman"
-            run.font.size = Pt(8)
-            run.font.bold = True
-            # 设置中文字体为宋体
-            rPr = run._element.get_or_add_rPr()
-            rFonts = rPr.find(qn('w:rFonts'))
-            if rFonts is None:
-                rFonts = rPr.makeelement(qn('w:rFonts'), {})
-                rPr.insert(0, rFonts)
-            rFonts.set(qn('w:eastAsia'), '宋体')
-            # 对齐方式设置为居中（美观）
-            p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+            if max_row < len(table.rows):
+                row_cells = table.rows[max_row].cells
+                if shipment_col_idx < len(row_cells):
+                    target_cell = row_cells[shipment_col_idx]
+                    target_cell.text = ""
+                    p = target_cell.paragraphs[0]
+                    p.clear()
+                    run = p.add_run(f"成交方式:{incoterms}")
+                    run.font.name = "Times New Roman"
+                    run.font.size = Pt(8)
+                    run.font.bold = True
+                    rPr = run._element.get_or_add_rPr()
+                    rFonts = rPr.find(qn('w:rFonts'))
+                    if rFonts is None:
+                        rFonts = rPr.makeelement(qn('w:rFonts'), {})
+                        rPr.insert(0, rFonts)
+                    rFonts.set(qn('w:eastAsia'), '宋体')
+                    p.alignment = WD_ALIGN_PARAGRAPH.CENTER
 
         # ============== 构建常规替换字典 ==============
         replacements = {
@@ -675,7 +676,6 @@ def modify_sales_confirmation(invoice_data, template_path, output_dir, user_inpu
             "EUR": currency_replacer,
         }
 
-        # 针对不是默认买方名称，删除预设的地址和电话
         if buyer_name != "香港致达五金制品有限公司":
             replacements["Telephone：00852-3165147"] = ""
             replacements["Telephone:00852-3165147"] = ""
@@ -722,13 +722,11 @@ def modify_sales_confirmation(invoice_data, template_path, output_dir, user_inpu
             if not paragraph.text.strip():
                 return
             
-            # 第一步：尝试在 run 级别安全替换（100% 保持原有格式）
             for k in sorted_keys:
                 for run in paragraph.runs:
                     if k in run.text:
                         run.text = run.text.replace(k, str(replacements[k]))
             
-            # 第二步：应对文本被 word 分散到多个 run 的情况，重建段落并继承第一个 run 的样式
             for k in sorted_keys:
                 if k in paragraph.text:
                     temp_txt = paragraph.text
@@ -903,7 +901,6 @@ def create_export_declaration(invoice_data, template_path, output_dir, user_inpu
 
         rows_to_delete = max_item_rows_in_template - num_items
         if rows_to_delete > 0:
-            # ============== 彻底修复：隐藏而不是删除多余空行，完美保留底部格式 ==============
             for r_idx in range(start_row + num_items, start_row + max_item_rows_in_template):
                 ws.row_dimensions[r_idx].hidden = True
                 for c_idx in range(1, 15):
