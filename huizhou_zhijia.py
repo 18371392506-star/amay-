@@ -735,6 +735,29 @@ def modify_sales_confirmation(invoice_data, template_path, output_dir, user_inpu
                     for p in c.paragraphs:
                         replace_run_text_preserve_format(p)
 
+        # ============== 惠州地址字号调整：宋体 7.5 号 ==============
+        address_marker = "博罗县龙溪街道长湖村"
+
+        def _set_address_font(paragraph):
+            if address_marker in paragraph.text:
+                for run in paragraph.runs:
+                    run.font.size = Pt(7.5)
+                    rPr = run._element.get_or_add_rPr()
+                    rFonts = rPr.find(qn('w:rFonts'))
+                    if rFonts is None:
+                        rFonts = rPr.makeelement(qn('w:rFonts'), {})
+                        rPr.insert(0, rFonts)
+                    rFonts.set(qn('w:eastAsia'), '宋体')
+
+        for p in doc.paragraphs:
+            _set_address_font(p)
+
+        for t in doc.tables:
+            for r in t.rows:
+                for c in r.cells:
+                    for p in c.paragraphs:
+                        _set_address_font(p)
+
         fname = f"致嘉_成交确认书_{get_file_naming_date_str(invoice_data['date'])}.docx"
         fpath = os.path.join(output_dir, fname)
         doc.save(fpath)
