@@ -1,5 +1,5 @@
 # coding: utf-8
-"""东莞致嘉 - 自动文档生成（Streamlit 版）"""
+"""东莞/惠州致嘉 - 自动文档生成（Streamlit 版）"""
 import os
 import re
 import shutil
@@ -111,7 +111,7 @@ def get_item_category(chinese_name):
         main_name = parts[1] if len(parts) > 1 and re.search(r'[\u4e00-\u9fa5]', parts[1]) else parts[0]
     else:
         main_name = chinese_name
-        
+
     lower_name = chinese_name.lower()
     main_lower = main_name.lower()
 
@@ -129,7 +129,7 @@ def get_item_category(chinese_name):
         return "五金冲压模具"
     elif "汽车五金配件" in main_lower or "支架系统" in main_lower:
         return "汽车五金配件/用于支架系统"
-        
+
     return None
 
 
@@ -141,7 +141,7 @@ def get_unit_str(chinese_name):
     else:
         main_name = chinese_name
     lower_name = main_name.lower()
-    
+
     if "推车" in lower_name or "cart" in lower_name:
         return "辆"
     elif "机械手" in lower_name or "传送机" in lower_name or "robot" in lower_name:
@@ -381,6 +381,8 @@ def read_invoice_data(file_path):
 
         found_weights = net_weight > 0.0 or gross_weight > 0.0
 
+        # ========== 商品行收集（修复：支持带单位的数量，如 "2套"）==========
+        last_valid_name = ""
         for i in range(data_start_row, len(invoice_df)):
             row = invoice_df.iloc[i]
 
@@ -388,9 +390,17 @@ def read_invoice_data(file_path):
                 continue
 
             first_col_val = str(row.iloc[desc_col]).strip() if desc_col < len(row) else ""
+
+            # 若品名为空，继承上一行的品名（处理合并单元格）
+            if not first_col_val or first_col_val.lower() == "nan":
+                first_col_val = last_valid_name
+            else:
+                last_valid_name = first_col_val
+
             item = [None] * 9
             item[0] = first_col_val
 
+            # 如果整行基本为空，跳过
             if not item[0] and all(pd.isna(x) or str(x).strip() == "" for x in row.iloc[:min(len(row), 5)]):
                 continue
 
@@ -413,21 +423,24 @@ def read_invoice_data(file_path):
             except Exception:
                 pass
 
-            if item[0] and item[0] != "" and item[0].lower() != "nan":
-                qty_valid = False
-                try:
-                    if isinstance(item[4], (int, float)) and item[4] > 0:
-                        qty_valid = True
-                    elif isinstance(item[4], str) and item[4].strip():
-                        qty_float = float(item[4].replace(",", "").strip())
+            # 数量有效性判断：支持数字+单位混合
+            qty_valid = False
+            try:
+                if isinstance(item[4], (int, float)) and item[4] > 0:
+                    qty_valid = True
+                elif isinstance(item[4], str) and item[4].strip():
+                    qty_str = str(item[4]).replace(",", "").strip()
+                    match = re.search(r"[-+]?\d*\.?\d+", qty_str)
+                    if match:
+                        qty_float = float(match.group())
                         if qty_float > 0:
                             item[4] = qty_float
                             qty_valid = True
-                except Exception:
-                    pass
+            except Exception:
+                pass
 
-                if qty_valid:
-                    temp_data_storage.append(item)
+            if qty_valid:
+                temp_data_storage.append(item)
 
         data = temp_data_storage
 
@@ -462,12 +475,12 @@ def read_invoice_data(file_path):
                 if "装箱单" in sheet:
                     pack_sheet_name = sheet
                     break
-            
+
             if pack_sheet_name:
                 pack_df = pd.read_excel(file_path, sheet_name=pack_sheet_name)
                 box_col = -1
                 total_pkg_row = -1
-                
+
                 for i in range(len(pack_df)):
                     for j, val in enumerate(pack_df.iloc[i]):
                         val_str = str(val).strip()
@@ -475,7 +488,7 @@ def read_invoice_data(file_path):
                             box_col = j
                         if "总计" in val_str:
                             total_pkg_row = i
-                
+
                 if box_col != -1 and total_pkg_row != -1:
                     intersect_val = str(pack_df.iloc[total_pkg_row, box_col])
                     nums = re.findall(r'\d+', intersect_val.replace(",", ""))
@@ -579,7 +592,7 @@ def modify_sales_confirmation(invoice_data, template_path, output_dir, user_inpu
         data = invoice_data["data"]
         incoterms = user_inputs.get("incoterms", "CIF")
         currency_type = user_inputs.get("currency", "EUR")
-        
+
         buyer_name = user_inputs.get("buyer_name", "香港致达五金制品有限公司")
 
         currency_code_display = "EUR" if currency_type == "EUR" else "USD"
@@ -596,13 +609,13 @@ def modify_sales_confirmation(invoice_data, template_path, output_dir, user_inpu
         for t in doc.tables:
             for row in t.rows:
                 row_str = "".join(c.text for c in row.cells)
-                
+
                 # 第一件商品行：清空最后一列原有的“成交方式:CIF”
                 if target_first in row_str and num_items > 1:
                     last_cell = row.cells[-1]
                     if "CIF" in last_cell.text or "成交方式" in last_cell.text:
                         last_cell.text = ""
-                
+
                 # 最后一件商品行：写入成交方式
                 if target_last in row_str:
                     last_cell = row.cells[-1]
@@ -679,19 +692,19 @@ def modify_sales_confirmation(invoice_data, template_path, output_dir, user_inpu
         def replace_run_text_preserve_format(paragraph):
             if not paragraph.text.strip():
                 return
-            
+
             for k in sorted_keys:
                 for run in paragraph.runs:
                     if k in run.text:
                         run.text = run.text.replace(k, str(replacements[k]))
-            
+
             for k in sorted_keys:
                 if k in paragraph.text:
                     temp_txt = paragraph.text
                     for key in sorted_keys:
                         if key in temp_txt:
                             temp_txt = temp_txt.replace(key, str(replacements[key]))
-                    
+
                     if len(paragraph.runs) > 0:
                         ref_run = paragraph.runs[0]
                         font_name = ref_run.font.name
@@ -700,11 +713,11 @@ def modify_sales_confirmation(invoice_data, template_path, output_dir, user_inpu
                         italic = ref_run.font.italic
                         underline = ref_run.font.underline
                         color_rgb = ref_run.font.color.rgb if ref_run.font.color else None
-                        
+
                         east_asia = None
                         if ref_run.element.rPr is not None and ref_run.element.rPr.rFonts is not None:
                             east_asia = ref_run.element.rPr.rFonts.get(qn('w:eastAsia'))
-                        
+
                         paragraph.clear()
                         new_run = paragraph.add_run(temp_txt)
                         new_run.font.name = font_name
@@ -714,7 +727,7 @@ def modify_sales_confirmation(invoice_data, template_path, output_dir, user_inpu
                         new_run.font.underline = underline
                         if color_rgb:
                             new_run.font.color.rgb = color_rgb
-                        
+
                         if east_asia:
                             new_run.element.get_or_add_rPr().get_or_add_rFonts().set(qn('w:eastAsia'), east_asia)
                         elif font_name:
@@ -732,6 +745,13 @@ def modify_sales_confirmation(invoice_data, template_path, output_dir, user_inpu
                 for c in r.cells:
                     for p in c.paragraphs:
                         replace_run_text_preserve_format(p)
+
+        # 统一表格内段落居中
+        for table in doc.tables:
+            for row in table.rows:
+                for cell in row.cells:
+                    for paragraph in cell.paragraphs:
+                        paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
 
         fname = f"致嘉_成交确认书_{get_file_naming_date_str(invoice_data['date'])}.docx"
         fpath = os.path.join(output_dir, fname)
@@ -754,6 +774,7 @@ def create_export_declaration(invoice_data, template_path, output_dir, user_inpu
         consignee = user_inputs.get("consignee", "")
         trade_country = user_inputs.get("trade_country", "")
         pack_type = user_inputs.get("pack_type", "")
+        factory = user_inputs.get("factory", "东莞致嘉")
 
         freight = user_inputs.get("freight", "")
         insurance = user_inputs.get("insurance", "")
@@ -761,7 +782,7 @@ def create_export_declaration(invoice_data, template_path, output_dir, user_inpu
 
         gross_weight = invoice_data.get("gross_weight", 0)
         net_weight = invoice_data.get("net_weight", 0)
-        
+
         total_packages = invoice_data.get("total_packages", len(data))
 
         incoterms = user_inputs.get("incoterms", "CIF")
@@ -793,6 +814,16 @@ def create_export_declaration(invoice_data, template_path, output_dir, user_inpu
             "IFEE": insurance,
             "OFEE": other_fees,
         }
+
+        # ========== 惠州致嘉特殊替换 ==========
+        if factory == "惠州致嘉":
+            # 先替换完整的境内发货人信息
+            replacements["441996482N 东莞致嘉金属科技有限公司91441900590063932M"] = \
+                "4413960FRK 惠州市致嘉模具有限公司 91441322MAELYTFD8K"
+            replacements["境内发货人:441996482N 东莞致嘉金属科技有限公司91441900590063932M"] = \
+                "境内发货人:4413960FRK                                                      惠州市致嘉模具有限公司 91441322MAELYTFD8K"
+            # 最后全局替换“东莞”为“惠州”（用于境内货源地）
+            replacements["东莞"] = "惠州"
 
         for row in ws.iter_rows():
             for cell in row:
@@ -884,8 +915,11 @@ def _build_zip(output_dir, zip_name):
 
 
 def render():
-    st.header("东莞致嘉 · 出口单证自动生成")
+    st.header("东莞/惠州致嘉 · 出口单证自动生成")
     st.caption("上传 Excel 发票，自动生成：申报要素(Word)、成交确认书(Word)、出口报关单(Excel)，打包为一个 ZIP 下载。")
+
+    # ========== 工厂选择 ==========
+    factory = st.selectbox("选择工厂", ["东莞致嘉", "惠州致嘉"], key="factory_select")
 
     uploaded = st.file_uploader("1. 上传 Excel 发票文件 (.xlsx / .xls)", type=["xlsx", "xls"], key="zhijia_upload")
 
@@ -932,6 +966,10 @@ def render():
                     st.error("无法读取发票数据或发票数据为空，请检查文件内容与列名（中文品名/型号/数量/单价/金额）。")
                     return
 
+                # ========== 惠州致嘉：覆盖公司名 ==========
+                if factory == "惠州致嘉":
+                    invoice_data["company_name"] = "惠州市致嘉模具有限公司"
+
                 num_items = len(invoice_data["data"])
                 st.session_state["zhijia_summary"] = {
                     "公司": invoice_data["company_name"],
@@ -945,7 +983,7 @@ def render():
                     "毛重": invoice_data["gross_weight"],
                     "found_weights": invoice_data["found_weights"],
                 }
-                
+
                 buyer_name = buyer_name_raw.strip() if buyer_name_raw.strip() else "香港致达五金制品有限公司"
 
                 user_inputs = {
@@ -958,6 +996,7 @@ def render():
                     "freight": freight,
                     "insurance": insurance,
                     "other_fees": other_fees,
+                    "factory": factory,   # 新增
                 }
 
                 path1 = create_declaration_elements(invoice_data, tmp)
