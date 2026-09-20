@@ -15,6 +15,7 @@ from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 from docx.shared import Pt
+from docx.table import _Cell
 from openpyxl import load_workbook
 from openpyxl.styles import Alignment
 
@@ -336,33 +337,28 @@ def _replace(doc, values):
         raise ValueError("文档模板存在未填写字段。")
 
 
-def _set_table_borders(table):
-    """设置表格边框：只保留竖线，去掉横线。"""
+def _remove_table_borders(table):
+    """移除表格所有边框（横线和竖线），让它看起来像普通文本行。"""
     tbl = table._tbl
     tblPr = tbl.tblPr
-    # 查找或创建 tblBorders
     tblBorders = tblPr.find(qn('w:tblBorders'))
     if tblBorders is None:
         tblBorders = OxmlElement('w:tblBorders')
         tblPr.append(tblBorders)
-    # 清除现有边框设置
     for child in list(tblBorders):
         tblBorders.remove(child)
-    # 设置边框：上下内横线为 none，左右内竖线为 single
-    for border_name in ['top', 'bottom', 'insideH']:
+    for border_name in ('top', 'bottom', 'left', 'right', 'insideH', 'insideV'):
         border = OxmlElement(f'w:{border_name}')
-        border.set(qn('w:val'), 'none')
+        border.set(qn('w:val'), 'nil')
         border.set(qn('w:sz'), '0')
         border.set(qn('w:space'), '0')
         border.set(qn('w:color'), 'auto')
         tblBorders.append(border)
-    for border_name in ['left', 'right', 'insideV']:
-        border = OxmlElement(f'w:{border_name}')
-        border.set(qn('w:val'), 'single')
-        border.set(qn('w:sz'), '4')
-        border.set(qn('w:space'), '0')
-        border.set(qn('w:color'), 'auto')
-        tblBorders.append(border)
+
+
+def _row_cells(table, tr):
+    """从 tr 元素获取 _Cell 对象列表，避免 table.rows 因动态插入而索引错乱。"""
+    return [_Cell(tc, table) for tc in tr.findall(qn('w:tc'))]
 
 
 def create_declaration_elements(data):
@@ -393,26 +389,47 @@ def create_declaration_elements(data):
 def create_sales_contract(data, inputs):
     doc = Document(STATIC_DIR / "购销合同模板.docx")
     table = doc.tables[0]
-    _set_table_borders(table)
+    # 去掉模板所有边框：没有横线、也没有竖线，看起来就是普通文本行。
+    _remove_table_borders(table)
+
     prototype = table.rows[3]._tr
     anchor = prototype
+
+    # 第一行：只放币种，其他单元格全部留空。
+    currency_node = deepcopy(prototype)
+    anchor.addnext(currency_node)
+    anchor = currency_node
+    currency_cells = _row_cells(table, currency_node)
+    for cell in currency_cells:
+        cell.text = ""
+    if len(currency_cells) > 4:
+        cell = currency_cells[4]
+        cell.text = data["currency"]
+        for p in cell.paragraphs:
+            p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+            p.paragraph_format.space_after = Pt(3)
+            p.paragraph_format.space_before = Pt(3)
+            for run in p.runs:
+                _font(run, 8, bold=True)
+
+    # 第二行起：逐个商品填写，不再重复币种。
     for index, item in enumerate(data["items"], 1):
         node = deepcopy(prototype)
         anchor.addnext(node)
         anchor = node
-        row = table.rows[3 + index]
-        # 币种只在第一行商品行显示
-        currency_line = data['currency'] + "\n" if index == 1 else ""
+        cells = _row_cells(table, node)
         values = {
             0: str(index),
             2: item["name"],
             3: f"{_fmt(item['qty'])}{item['unit']}",
-            4: f"{currency_line}{_fmt(item['price'])}",
-            5: f"{currency_line}{item['amount']:.2f}",
+            4: _fmt(item["price"]),
+            5: f"{item['amount']:.2f}",
             7: f"成交方式:{data['incoterms']}" if index == len(data["items"]) else "",
         }
         for col, value in values.items():
-            cell = row.cells[col]
+            if col >= len(cells):
+                continue
+            cell = cells[col]
             cell.text = value
             for p in cell.paragraphs:
                 p.alignment = WD_ALIGN_PARAGRAPH.CENTER
@@ -420,10 +437,11 @@ def create_sales_contract(data, inputs):
                 p.paragraph_format.space_before = Pt(3)
                 for run in p.runs:
                     _font(run, 8, bold=True)
-        row.height = None
         cant_split = OxmlElement("w:cantSplit")
-        row._tr.get_or_add_trPr().append(cant_split)
+        node.get_or_add_trPr().append(cant_split)
+
     prototype.getparent().remove(prototype)
+
     contract_date = _date(inputs["contract_date"])
     _replace(doc, {
         "{{BUYER}}": inputs["buyer_name"], "{{BUYER_ADDRESS}}": inputs.get("buyer_address", ""),
@@ -522,6 +540,7 @@ def generate_documents(data, inputs, source_bytes=None, source_filename=None):
         f"锋铭_购销合同_{stamp}.docx": create_sales_contract(data, inputs),
         f"锋铭_出口报关单_{stamp}.xlsx": create_export_declaration(data, inputs),
     }
+    # 压缩包里同时附带原始发票与装箱单文件，便于用户核对。
     if source_bytes:
         ext = Path(source_filename).suffix if source_filename else ".xlsx"
         documents[f"锋铭_发票及装箱单_{stamp}{ext}"] = source_bytes
@@ -597,5 +616,6 @@ def render():
             st.error(f"生成失败：{exc}")
     result = st.session_state.get("fm_result")
     if result:
+        # 只提供压缩包下载，压缩包内含申报要素、购销合同、报关单、发票及装箱单。
         st.download_button("下载锋铭单证 ZIP", result[2],
                            f"锋铭_单证_{data['date']:%Y%m%d}.zip", "application/zip", key="fm_zip")
