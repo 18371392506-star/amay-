@@ -7,6 +7,7 @@ import streamlit as st
 import renchuang
 import zhijia
 import huizhou_zhijia  # 新增引入
+import fengming
 
 st.set_page_config(
     page_title="出口单证生成平台",
@@ -19,9 +20,11 @@ FACTORIES = {
     "东莞致嘉 · 五金冲压模具/检具等": {"page": "zhijia", "desc": "上传发票 → 生成 申报要素 / 成交确认书 / 出口报关单"},
     "惠州致嘉 · 五金冲压模具/检具等": {"page": "huizhou_zhijia", "desc": "上传发票 → 生成 申报要素 / 成交确认书 / 出口报关单 (惠州工厂专用)"}, # 新增这一行
     "宜章仁创 · 液晶显示屏单证": {"page": "renchuang", "desc": "上传装箱单/购销合同 → 生成 申报要素 / 出口报关单"},
+    "东莞锋铭 · 注塑模具/夹具/塑胶件": {"page": "fengming", "desc": "上传发票及装箱单 → 生成 申报要素 / 购销合同 / 出口报关单"},
 }
 
 FUNCTION_MAP = {
+    "fengming": fengming.render,
     "zhijia": zhijia.render,
     "huizhou_zhijia": huizhou_zhijia.render, # 新增这一行映射
     "renchuang": renchuang.render,
