@@ -9,15 +9,17 @@ import math
 import re
 import zipfile
 
-import pandas as pd 
+import pandas as pd
 from docx import Document
 from docx.enum.text import WD_ALIGN_PARAGRAPH
+from docx.enum.table import WD_CELL_VERTICAL_ALIGNMENT
+from docx.text.paragraph import Paragraph
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 from docx.shared import Pt
-from docx.table import _Cell
-from openpyxl import load_workbook
-from openpyxl.styles import Alignment
+from openpyxl import load_workbook, Workbook
+from openpyxl.styles import Alignment, Border, Font, PatternFill, Protection, Side
+from openpyxl.utils import get_column_letter
 
 
 STATIC_DIR = Path(__file__).resolve().parent / "static" / "fengming"
@@ -48,6 +50,40 @@ PRODUCTS = {
         "elements": "1.品牌类型：无品牌；2.出口享惠：不享惠；3.适用车型：通用型；"
         "4.非成套散件；5.品牌：无牌；6.型号：{model}",
     },
+    "hot_runner": {
+        "name": "注塑模具配件/热流道系统", "code": "8480719090", "unit": "套",
+        "description": "注塑模具配件/热流道系统",
+        "brands": {"YUDO", "YUDO无中文品牌"},
+        "elements": "1.品牌类型：境外品牌其他；2.出口享惠：享惠；3.产品用途：注塑模具用；"
+        "4.适用材料：塑胶；5.品牌：YUDO/无中文品牌；6.型号：{model}；"
+        "7.原理：发热，提高注塑效率；8.材质：钢材",
+    },
+    "mould_rack": {
+        "name": "模具架子", "code": "8480719090", "unit": "个",
+        "description": "模具架子",
+        "elements": "1.品牌类型：无品牌；2.出口享惠：不享惠；3.产品用途：用于存放注塑模具；"
+        "4.适用材料：钢材；5.品牌：无牌；6.型号：{model}；"
+        "7.原理：用钢材焊接成型；8.材质：钢材",
+    },
+    "mould_insert": {
+        "name": "模具配件/镶件", "code": "8480719090", "unit": "个",
+        "description": "模具配件/镶件",
+        "elements": "0|不享惠|装配在注塑模具上，用于生产注塑产品|塑料|无牌|{model_type}|钢铁制|注塑成型",
+    },
+    "ventilation_mould": {
+        "name": "注塑模具/用于生产汽车通风系统配件", "code": "8480719090", "unit": "套",
+        "description": "其他塑料或橡胶用注模",
+        "elements": "1.品牌类型：无品牌；2.出口享惠：不享惠；3.产品用途：用于生产汽车通风系统配件；"
+        "4.适用材料：塑胶；5.品牌：无牌；6.型号：{model}；"
+        "7.原理：塑胶颗粒经高温溶解后注入模具中，经冷却成型；8.材质：钢材",
+    },
+}
+
+# 品名仅写“注塑模具/其他塑料或橡胶用注模”时，使用用户明确提供的型号用途。
+# 同一型号也可能用于模具架子等商品，因此明确的商品名称优先于此表。
+MOULD_MODEL_CATEGORIES = {
+    **dict.fromkeys(("NDT25170", "NDT25172", "NDT25173", "NDT25174", "NDT25175", "NDT25111", "NDT25285"), "mould"),
+    "NDT23207": "ventilation_mould", "NDT23208": "ventilation_mould",
 }
 
 
@@ -92,9 +128,9 @@ def _date(value):
         raise ValueError(f"日期无效：{value}") from exc
 
 
-def _sheet(book, kind):
+def _sheet_name(names, kind):
     candidates = []
-    for name in book.sheet_names:
+    for name in names:
         key = _key(name)
         if (kind == "invoice" and ("发票" in key or key == "INVOICE")) or (
             kind == "packing" and ("装箱单" in key or key in {"PACKINGLIST", "PACKING"})):
@@ -102,7 +138,11 @@ def _sheet(book, kind):
     if len(candidates) != 1:
         label = "发票 INVOICE" if kind == "invoice" else "装箱单 PACKING LIST"
         raise ValueError(f"请提供唯一的【{label}】工作表，目前找到 {len(candidates)} 个。")
-    return book.parse(candidates[0], header=None, dtype=object).fillna("")
+    return candidates[0]
+
+
+def _sheet(book, kind):
+    return book.parse(_sheet_name(book.sheet_names, kind), header=None, dtype=object).fillna("")
 
 
 def _header(frame, kind):
@@ -117,6 +157,7 @@ def _header(frame, kind):
         "nw": ("总净重", "净重", "NETWEIGHT", "NW"),
         "gw": ("总毛重", "毛重", "GROSSWEIGHT", "GW"),
         "packages": ("箱量", "箱数", "包装件数", "CTNS"),
+        "unit": ("单位", "UNIT"),
     }
     required = {"name", "contract", "model", "qty"}
     required |= {"price", "amount"} if kind == "invoice" else {"nw", "gw", "packages"}
@@ -149,15 +190,40 @@ def _metadata(frame, end, labels):
     return ""
 
 
-def _category(name):
+def _category(name, model=""):
     key = _key(name)
-    if key in {"注塑模具", "注塑模具用于生产汽车后视镜塑胶件", "注塑模具用于生产汽车后视镜配件"}:
+    if key in {"注塑模具配件热流道系统", "模具配件热流道系统", "热流道系统"}:
+        return "hot_runner"
+    if key in {"模具架子", "模具架", "注塑模具架子"}:
+        return "mould_rack"
+    if key in {"模具配件镶件", "注塑模具配件镶件", "镶件"}:
+        return "mould_insert"
+    if key in {"注塑模具用于生产汽车后视镜塑胶件", "注塑模具用于生产汽车后视镜配件"}:
         return "mould"
+    if key in {"注塑模具用于生产汽车通风系统配件", "注塑模具用于生产汽车通风系统塑胶件"}:
+        return "ventilation_mould"
+    if key in {"注塑模具", "其他塑料或橡胶用注模"}:
+        category = MOULD_MODEL_CATEGORIES.get(_text(model).upper().removesuffix("型"))
+        if category:
+            return category
+        raise ValueError(f"商品【{name}】型号【{model}】未配置用途，请在品名中注明“用于生产汽车后视镜配件”或“用于生产汽车通风系统配件”。")
     if key == "夹具":
         return "fixture"
     if key == "汽车后视镜塑胶件":
         return "plastic"
     raise ValueError(f"尚未配置商品【{name}】的申报规则，请先补充品名、编码和申报要素。")
+
+
+def _item_unit(raw_unit, raw_qty, default):
+    unit = _key(raw_unit)
+    if unit in {"", "PCS", "PC", "PIECES"}:
+        explicit = re.search(r"(套|个|台|件)\s*$", _text(raw_qty))
+        return explicit.group(1) if explicit else default
+    if unit in {"SET", "SETS"}:
+        return "套"
+    if unit in {"套", "个", "台", "件"}:
+        return unit
+    raise ValueError(f"暂不支持计量单位【{raw_unit}】，请核对。")
 
 
 def _total_row(row, name_col):
@@ -211,13 +277,14 @@ def read_invoice_data(source):
             if any(_text(get(f)) for f in ("qty", "price", "model")):
                 raise ValueError(f"发票第 {index + 1} 行缺少品名，不能忽略有数据的商品行。")
             continue
-        category = _category(name)
-        rule = PRODUCTS[category]
         model = _required(get("model"), f"发票第 {index + 1} 行型号")
+        category = _category(name, model)
+        rule = PRODUCTS[category]
         contract = _required(get("contract"), f"发票第 {index + 1} 行合同号")
         brand = _text(get("brand")) if "brand" in inv_cols else ""
-        if _key(brand) not in {"无牌", "无品牌", "NOBRAND"}:
-            raise ValueError(f"商品【{name}】品牌为【{brand or '空白'}】，当前申报规则仅适用于无品牌商品。")
+        if _key(brand) not in rule.get("brands", {"无牌", "无品牌", "NOBRAND"}):
+            expected = "仅适用于 YUDO/无中文品牌" if category == "hot_runner" else "仅适用于无品牌商品"
+            raise ValueError(f"商品【{name}】品牌为【{brand or '空白'}】，当前申报规则{expected}。")
         qty = _number(get("qty"), f"{name}数量")
         price = _number(get("price"), f"{name}单价")
         amount = _number(get("amount"), f"{name}金额")
@@ -227,7 +294,7 @@ def read_invoice_data(source):
             raise ValueError(f"商品【{name}】数量×单价与金额不一致，请核对发票。")
         items.append(dict(source_name=name, name=rule["name"], category=category,
                           model=model, qty=qty, price=price, amount=amount,
-                          code=rule["code"], unit=rule["unit"]))
+                          code=rule["code"], unit=_item_unit(get("unit") if "unit" in inv_cols else "", get("qty"), rule["unit"])))
         contracts.add(contract)
     if not items:
         raise ValueError("发票未找到有效商品。")
@@ -249,8 +316,8 @@ def read_invoice_data(source):
             if any(_text(get(f)) for f in ("qty", "model", "nw", "gw", "packages")):
                 raise ValueError(f"装箱单第 {index + 1} 行缺少品名，请检查合并单元格或商品数据。")
             continue
-        category = _category(name)
         model = _required(get("model"), f"装箱单第 {index + 1} 行型号")
+        category = _category(name, model)
         if _text(get("contract")) != contract_number:
             raise ValueError("发票与装箱单合同号不一致。")
         key = (category, model)
@@ -294,10 +361,9 @@ def read_invoice_data(source):
                 pack_type=pack_type, net_weight=net_weight, gross_weight=gross_weight)
 
 
-def _font(run, size=10, bold=False):
+def _font(run, size=10):
     run.font.name = "Times New Roman"
     run.font.size = Pt(size)
-    run.font.bold = bold
     run._element.get_or_add_rPr().get_or_add_rFonts().set(qn("w:eastAsia"), "宋体")
 
 
@@ -337,30 +403,6 @@ def _replace(doc, values):
         raise ValueError("文档模板存在未填写字段。")
 
 
-def _remove_table_borders(table):
-    """移除表格所有边框（横线和竖线），让它看起来像普通文本行。"""
-    tbl = table._tbl
-    tblPr = tbl.tblPr
-    tblBorders = tblPr.find(qn('w:tblBorders'))
-    if tblBorders is None:
-        tblBorders = OxmlElement('w:tblBorders')
-        tblPr.append(tblBorders)
-    for child in list(tblBorders):
-        tblBorders.remove(child)
-    for border_name in ('top', 'bottom', 'left', 'right', 'insideH', 'insideV'):
-        border = OxmlElement(f'w:{border_name}')
-        border.set(qn('w:val'), 'nil')
-        border.set(qn('w:sz'), '0')
-        border.set(qn('w:space'), '0')
-        border.set(qn('w:color'), 'auto')
-        tblBorders.append(border)
-
-
-def _row_cells(table, tr):
-    """从 tr 元素获取 _Cell 对象列表，避免 table.rows 因动态插入而索引错乱。"""
-    return [_Cell(tc, table) for tc in tr.findall(qn('w:tc'))]
-
-
 def create_declaration_elements(data):
     doc = Document()
     normal = doc.styles["Normal"]
@@ -380,7 +422,8 @@ def create_declaration_elements(data):
         if rule.get("description"):
             p = doc.add_paragraph("商品描述：" + rule["description"])
             p.paragraph_format.keep_with_next = True
-        doc.add_paragraph("申报要素：" + rule["elements"].format(model=item["model"]))
+        model_type = item["model"] if item["model"].endswith("型") else item["model"] + "型"
+        doc.add_paragraph("申报要素：" + rule["elements"].format(model=item["model"], model_type=model_type))
     stream = BytesIO()
     doc.save(stream)
     return stream.getvalue()
@@ -389,59 +432,33 @@ def create_declaration_elements(data):
 def create_sales_contract(data, inputs):
     doc = Document(STATIC_DIR / "购销合同模板.docx")
     table = doc.tables[0]
-    # 去掉模板所有边框：没有横线、也没有竖线，看起来就是普通文本行。
-    _remove_table_borders(table)
-
-    prototype = table.rows[3]._tr
-    anchor = prototype
-
-    # 第一行：只放币种，其他单元格全部留空。
-    currency_node = deepcopy(prototype)
-    anchor.addnext(currency_node)
-    anchor = currency_node
-    currency_cells = _row_cells(table, currency_node)
-    for cell in currency_cells:
-        cell.text = ""
-    if len(currency_cells) > 4:
-        cell = currency_cells[4]
-        cell.text = data["currency"]
-        for p in cell.paragraphs:
-            p.alignment = WD_ALIGN_PARAGRAPH.CENTER
-            p.paragraph_format.space_after = Pt(3)
-            p.paragraph_format.space_before = Pt(3)
-            for run in p.runs:
-                _font(run, 8, bold=True)
-
-    # 第二行起：逐个商品填写，不再重复币种。
+    # 原模板的商品区只有一个大行，商品用段落排列；不能为每个商品复制带横线的行。
+    row = table.rows[3]
+    columns = {0: [""], 2: [""], 3: [""], 4: [data["currency"]], 5: [data["currency"]]}
     for index, item in enumerate(data["items"], 1):
-        node = deepcopy(prototype)
-        anchor.addnext(node)
-        anchor = node
-        cells = _row_cells(table, node)
-        values = {
-            0: str(index),
-            2: item["name"],
-            3: f"{_fmt(item['qty'])}{item['unit']}",
-            4: _fmt(item["price"]),
-            5: f"{item['amount']:.2f}",
-            7: f"成交方式:{data['incoterms']}" if index == len(data["items"]) else "",
-        }
-        for col, value in values.items():
-            if col >= len(cells):
-                continue
-            cell = cells[col]
-            cell.text = value
-            for p in cell.paragraphs:
-                p.alignment = WD_ALIGN_PARAGRAPH.CENTER
-                p.paragraph_format.space_after = Pt(3)
-                p.paragraph_format.space_before = Pt(3)
-                for run in p.runs:
-                    _font(run, 8, bold=True)
-        cant_split = OxmlElement("w:cantSplit")
-        node.get_or_add_trPr().append(cant_split)
-
-    prototype.getparent().remove(prototype)
-
+        columns[0].append(str(index))
+        columns[2].append(item["name"])
+        columns[3].append(f"{_fmt(item['qty'])}{item['unit']}")
+        columns[4].append(_fmt(item["price"]))
+        columns[5].append(_fmt(item["amount"]))
+    columns[7] = [f"成交方式:{data['incoterms']}"]
+    for col, lines in columns.items():
+        cell = row.cells[col]
+        prototype = deepcopy(cell.paragraphs[0]._p)
+        original_run = cell.paragraphs[0].runs[0]
+        run_props = deepcopy(original_run._r.rPr)
+        for paragraph in list(cell.paragraphs):
+            cell._tc.remove(paragraph._p)
+        for value in lines:
+            node = deepcopy(prototype)
+            cell._tc.append(node)
+            paragraph = Paragraph(node, cell)
+            paragraph.clear()
+            run = paragraph.add_run(value)
+            if run_props is not None:
+                run._r.insert(0, deepcopy(run_props))
+            # 保留原模板的字体、字号、粗体和对齐，不重新套统一字体。
+        cell.vertical_alignment = WD_CELL_VERTICAL_ALIGNMENT.BOTTOM if col == 7 else WD_CELL_VERTICAL_ALIGNMENT.TOP
     contract_date = _date(inputs["contract_date"])
     _replace(doc, {
         "{{BUYER}}": inputs["buyer_name"], "{{BUYER_ADDRESS}}": inputs.get("buyer_address", ""),
@@ -530,7 +547,133 @@ def create_export_declaration(data, inputs):
     return stream.getvalue()
 
 
-def generate_documents(data, inputs, source_bytes=None, source_filename=None):
+def _xls_source_sheet(book, sheet_name):
+    """把原 .xls 的单个工作表导出为 .xlsx，保留值、字体、边框、尺寸和合并区域。"""
+    import xlrd
+
+    source = book.sheet_by_name(sheet_name)
+    wb = Workbook()
+    ws = wb.active
+    ws.title = source.name
+    border_styles = {0: None, 1: "thin", 2: "medium", 3: "dashed", 4: "dotted", 5: "thick",
+                     6: "double", 7: "hair", 8: "mediumDashed", 9: "dashDot", 10: "mediumDashDot",
+                     11: "dashDotDot", 12: "mediumDashDotDot", 13: "slantDashDot"}
+    patterns = {0: None, 1: "solid", 2: "mediumGray", 3: "darkGray", 4: "lightGray", 5: "darkHorizontal",
+                6: "darkVertical", 7: "darkDown", 8: "darkUp", 9: "darkGrid", 10: "darkTrellis",
+                11: "lightHorizontal", 12: "lightVertical", 13: "lightDown", 14: "lightUp",
+                15: "lightGrid", 16: "lightTrellis", 17: "gray125", 18: "gray0625"}
+    horizontal = {0: "general", 1: "left", 2: "center", 3: "right", 4: "fill", 5: "justify", 6: "centerContinuous", 7: "distributed"}
+    vertical = {0: "top", 1: "center", 2: "bottom", 3: "justify", 4: "distributed"}
+
+    def color(index):
+        rgb = book.colour_map.get(index)
+        return "FF" + "".join(f"{v:02X}" for v in rgb) if rgb else "FF000000"
+
+    cache = {}
+    for ri in range(source.nrows):
+        for ci in range(source.ncols):
+            old = source.cell(ri, ci)
+            cell = ws.cell(ri + 1, ci + 1)
+            value = old.value
+            if old.ctype == xlrd.XL_CELL_DATE:
+                value = xlrd.xldate_as_datetime(value, book.datemode)
+            elif old.ctype == xlrd.XL_CELL_BOOLEAN:
+                value = bool(value)
+            elif old.ctype == xlrd.XL_CELL_ERROR:
+                value = xlrd.error_text_from_code.get(value, "#VALUE!")
+            elif old.ctype in (xlrd.XL_CELL_EMPTY, xlrd.XL_CELL_BLANK):
+                value = None
+            cell.value = value
+            # 原文字即使以“=”开头也仍为文字，不能转成新公式。
+            if old.ctype == xlrd.XL_CELL_TEXT:
+                cell.data_type = "s"
+            xf_index = old.xf_index
+            if xf_index not in cache:
+                xf = book.xf_list[xf_index]
+                font, align, edge = book.font_list[xf.font_index], xf.alignment, xf.border
+                cell.font = Font(name=font.name, size=font.height / 20, bold=bool(font.bold),
+                                 italic=bool(font.italic), strike=bool(font.struck_out), color=color(font.colour_index),
+                                 underline={0: None, 1: "single", 2: "double", 33: "singleAccounting", 34: "doubleAccounting"}.get(font.underline_type))
+                cell.alignment = Alignment(horizontal=horizontal.get(align.hor_align, "general"),
+                                           vertical=vertical.get(align.vert_align, "bottom"),
+                                           wrap_text=bool(align.text_wrapped), text_rotation=align.rotation,
+                                           shrink_to_fit=bool(align.shrink_to_fit), indent=align.indent_level)
+                sides = {side: Side(style=border_styles.get(getattr(edge, side + "_line_style")),
+                                    color=color(getattr(edge, side + "_colour_index")))
+                         for side in ("left", "right", "top", "bottom")}
+                cell.border = Border(**sides)
+                cell.fill = PatternFill(patternType=patterns.get(xf.background.fill_pattern),
+                                        fgColor=color(xf.background.pattern_colour_index),
+                                        bgColor=color(xf.background.background_colour_index))
+                cell.number_format = book.format_map[xf.format_key].format_str
+                cell.protection = Protection(locked=bool(xf.protection.cell_locked), hidden=bool(xf.protection.formula_hidden))
+                cache[xf_index] = copy(cell._style)
+            else:
+                cell._style = copy(cache[xf_index])
+    for ri, info in source.rowinfo_map.items():
+        ws.row_dimensions[ri + 1].height = info.height / 20
+        ws.row_dimensions[ri + 1].hidden = bool(info.hidden)
+    for ci, info in source.colinfo_map.items():
+        dim = ws.column_dimensions[get_column_letter(ci + 1)]
+        dim.width, dim.hidden = info.width / 256, bool(info.hidden)
+    for r1, r2, c1, c2 in source.merged_cells:
+        ws.merge_cells(start_row=r1 + 1, end_row=r2, start_column=c1 + 1, end_column=c2)
+    ws.sheet_view.showGridLines = bool(source.show_grid_lines)
+    last_row = max((r + 1 for r in range(source.nrows) if any(source.cell_value(r, c) != "" for c in range(source.ncols))), default=1)
+    last_col = max((c + 1 for c in range(source.ncols) if any(source.cell_value(r, c) != "" for r in range(source.nrows))), default=1)
+    ws.print_area = f"A1:{get_column_letter(last_col)}{last_row}"
+    ws.sheet_properties.pageSetUpPr.fitToPage = True
+    ws.page_setup.fitToWidth, ws.page_setup.fitToHeight = 1, 0
+    return wb
+
+
+def export_source_documents(source, stamp):
+    """原发票和装箱单分别输出；数据取自上传文件，不用申报单的标准品名覆盖原资料。"""
+    import xlrd
+
+    if isinstance(source, bytes):
+        content = source
+    elif hasattr(source, "getvalue"):
+        content = source.getvalue()
+    else:
+        content = Path(source).read_bytes()
+    outputs = {}
+    # 部分真实 .xls 内嵌 ZIP 主题资源，is_zipfile 会误判；应检查文件头。
+    legacy = not content.startswith(b"PK\x03\x04")
+    book = xlrd.open_workbook(file_contents=content, formatting_info=True) if legacy else None
+    try:
+        for kind, label in (("invoice", "发票"), ("packing", "装箱单")):
+            if legacy:
+                name = _sheet_name(book.sheet_names(), kind)
+                wb = _xls_source_sheet(book, name)
+            else:
+                # 采用已计算的值，拆分后不会留下指向另一工作表的失效公式。
+                wb = load_workbook(BytesIO(content), data_only=True)
+                name = _sheet_name(wb.sheetnames, kind)
+                formulas = load_workbook(BytesIO(content), data_only=False)
+                try:
+                    for row in formulas[name]:
+                        for cell in row:
+                            if cell.data_type == "f" and wb[name][cell.coordinate].value is None:
+                                raise ValueError(f"{label} {cell.coordinate} 的公式没有计算结果，请先用 Excel 打开并保存原文件。")
+                finally:
+                    formulas.close()
+                for worksheet in list(wb.worksheets):
+                    if worksheet.title != name:
+                        wb.remove(worksheet)
+                wb[name].sheet_state = "visible"
+                wb.active = 0
+            output = BytesIO()
+            wb.save(output)
+            wb.close()
+            outputs[f"锋铭_{label}_{stamp}.xlsx"] = output.getvalue()
+    finally:
+        if book:
+            book.release_resources()
+    return outputs
+
+
+def generate_documents(data, inputs, source):
     for field, label in (("buyer_name", "合同买方"), ("consignee", "境外收货人"),
                          ("trade_country", "贸易国"), ("contract_date", "合同日期")):
         _required(inputs.get(field), label)
@@ -540,11 +683,8 @@ def generate_documents(data, inputs, source_bytes=None, source_filename=None):
         f"锋铭_购销合同_{stamp}.docx": create_sales_contract(data, inputs),
         f"锋铭_出口报关单_{stamp}.xlsx": create_export_declaration(data, inputs),
     }
-    # 压缩包里同时附带原始发票与装箱单文件，便于用户核对。
-    if source_bytes:
-        ext = Path(source_filename).suffix if source_filename else ".xlsx"
-        documents[f"锋铭_发票及装箱单_{stamp}{ext}"] = source_bytes
-    # ZIP只包含生成结果；使用内存缓冲区，避免并发请求覆盖临时文件。
+    documents.update(export_source_documents(source, stamp))
+    # 五份文件全部完成后才生成 ZIP，使用内存缓冲区避免并发覆盖。
     archive = BytesIO()
     with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED) as z:
         for name, content in documents.items():
@@ -557,7 +697,7 @@ def render():
     import streamlit as st
 
     st.header("东莞锋铭 · 出口单证自动生成")
-    st.caption("上传含发票和装箱单的 Excel，生成申报要素、购销合同和出口报关单。")
+    st.caption("上传含发票和装箱单的 Excel，下载包含申报要素、购销合同、报关单、发票和装箱单的 ZIP。")
     uploaded = st.file_uploader("1. 上传发票及装箱单 (.xls / .xlsx)", type=["xls", "xlsx"], key="fm_upload")
     if uploaded is None:
         for key in ("fm_result", "fm_source", "fm_data"):
@@ -609,13 +749,12 @@ def render():
     if st.button("生成锋铭单证", type="primary", key="fm_generate"):
         st.session_state.pop("fm_result", None)
         try:
-            with st.spinner("正在生成单证压缩包…"):
-                documents, archive = generate_documents(data, inputs, content, uploaded.name)
+            with st.spinner("正在打包五份单证…"):
+                documents, archive = generate_documents(data, inputs, content)
             st.session_state["fm_result"] = (signature, documents, archive)
         except Exception as exc:
             st.error(f"生成失败：{exc}")
     result = st.session_state.get("fm_result")
     if result:
-        # 只提供压缩包下载，压缩包内含申报要素、购销合同、报关单、发票及装箱单。
         st.download_button("下载锋铭单证 ZIP", result[2],
                            f"锋铭_单证_{data['date']:%Y%m%d}.zip", "application/zip", key="fm_zip")
