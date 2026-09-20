@@ -649,7 +649,7 @@ def generate_documents(data, inputs, source):
     for field, label in (("buyer_name", "合同买方"), ("consignee", "境外收货人"),
                          ("trade_country", "贸易国"), ("contract_date", "合同日期")):
         _required(inputs.get(field), label)
-    stamp = data["date"].strftime("%Y%m%d")
+    stamp = datetime.now(ZoneInfo("Asia/Shanghai")).strftime("%Y%m%d")
     documents = {
         f"锋铭_申报要素_{stamp}.docx": create_declaration_elements(data, inputs.get("benefit", "不享惠")),
         f"锋铭_购销合同_{stamp}.docx": create_sales_contract(data, inputs),
@@ -706,6 +706,7 @@ def render():
     trade_country = c2.text_input("贸易国（合同买方所在国家/地区）", "中国香港", key="fm_trade_country")
     buyer_address = st.text_input("买方地址", DEFAULT_BUYER_ADDRESS, key="fm_buyer_address")
     buyer_phone = st.text_input("买方电话", "00852-39622458", key="fm_buyer_phone")
+    pack_type = st.text_input("报关单包装种类", value="胶合纸箱", key="fm_pack_type")
     benefit = st.radio("出口享惠（统一应用于所有商品）", ["不享惠", "享惠"], key="fm_benefit")
     c3, c4, c5 = st.columns(3)
     freight = c3.text_input("运费", key="fm_freight")
@@ -714,8 +715,8 @@ def render():
     inputs = dict(buyer_name=buyer.strip(), consignee=consignee.strip(), contract_date=contract_date,
                   trade_country=trade_country.strip(), buyer_address=buyer_address.strip(),
                   buyer_phone=buyer_phone.strip(), freight=freight.strip(), insurance=insurance.strip(),
-                  other_fees=other_fees.strip(), benefit=benefit, pack_type=data["pack_type"])
-    signature = (fingerprint, tuple((k, str(v)) for k, v in inputs.items()))
+                  other_fees=other_fees.strip(), benefit=benefit, pack_type=pack_type.strip())
+    signature = (datetime.now(ZoneInfo("Asia/Shanghai")).date(), fingerprint, tuple((k, str(v)) for k, v in inputs.items()))
     previous = st.session_state.get("fm_result")
     if previous and previous[0] != signature:
         st.session_state.pop("fm_result", None)
