@@ -524,7 +524,7 @@ def create_export_declaration(data, inputs):
     for index, item in enumerate(data["items"]):
         row = 11 + index
         # 报关单字段为“商品名称及规格型号”，同时写入型号以便核对。
-        name = f"{item['name']}\n型号：{item['model']}"
+        name = item["name"]
         values = [index + 1, item["code"], name, f"{_fmt(item['qty'])}{item['unit']}",
                   float(item["price"]), float(item["amount"]), currencies[data["currency"]],
                   "中国", data["destination"], "东莞", "照章征税"]
@@ -534,7 +534,7 @@ def create_export_declaration(data, inputs):
             cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
             if col in (5, 6):
                 cell.number_format = "0.00"
-        name_lines = math.ceil(len(item["name"]) / 10) + math.ceil((len(item["model"]) + 3) / 16)
+        name_lines = math.ceil(len(item["name"]) / 10)
         ws.row_dimensions[row].height = max(54, 15 * name_lines)
     ws.print_area = f"A1:K{13 + extra}"
     ws.print_title_rows = "1:10"
@@ -628,49 +628,15 @@ def _xls_source_sheet(book, sheet_name):
 
 
 def export_source_documents(source, stamp):
-    """原发票和装箱单分别输出；数据取自上传文件，不用申报单的标准品名覆盖原资料。"""
-    import xlrd
-
+    """原样打包上传的工作簿，保留发票、装箱单及所有格式、公式。"""
     if isinstance(source, bytes):
         content = source
     elif hasattr(source, "getvalue"):
         content = source.getvalue()
     else:
         content = Path(source).read_bytes()
-    outputs = {}
-    # 部分真实 .xls 内嵌 ZIP 主题资源，is_zipfile 会误判；应检查文件头。
-    legacy = not content.startswith(b"PK\x03\x04")
-    book = xlrd.open_workbook(file_contents=content, formatting_info=True) if legacy else None
-    try:
-        for kind, label in (("invoice", "发票"), ("packing", "装箱单")):
-            if legacy:
-                name = _sheet_name(book.sheet_names(), kind)
-                wb = _xls_source_sheet(book, name)
-            else:
-                # 采用已计算的值，拆分后不会留下指向另一工作表的失效公式。
-                wb = load_workbook(BytesIO(content), data_only=True)
-                name = _sheet_name(wb.sheetnames, kind)
-                formulas = load_workbook(BytesIO(content), data_only=False)
-                try:
-                    for row in formulas[name]:
-                        for cell in row:
-                            if cell.data_type == "f" and wb[name][cell.coordinate].value is None:
-                                raise ValueError(f"{label} {cell.coordinate} 的公式没有计算结果，请先用 Excel 打开并保存原文件。")
-                finally:
-                    formulas.close()
-                for worksheet in list(wb.worksheets):
-                    if worksheet.title != name:
-                        wb.remove(worksheet)
-                wb[name].sheet_state = "visible"
-                wb.active = 0
-            output = BytesIO()
-            wb.save(output)
-            wb.close()
-            outputs[f"锋铭_{label}_{stamp}.xlsx"] = output.getvalue()
-    finally:
-        if book:
-            book.release_resources()
-    return outputs
+    extension = "xlsx" if content.startswith(b"PK\x03\x04") else "xls"
+    return {f"锋铭_发票及装箱单_{stamp}.{extension}": content}
 
 
 def generate_documents(data, inputs, source):
@@ -684,7 +650,7 @@ def generate_documents(data, inputs, source):
         f"锋铭_出口报关单_{stamp}.xlsx": create_export_declaration(data, inputs),
     }
     documents.update(export_source_documents(source, stamp))
-    # 五份文件全部完成后才生成 ZIP，使用内存缓冲区避免并发覆盖。
+    # 四个文件全部完成后才生成 ZIP，使用内存缓冲区避免并发覆盖。
     archive = BytesIO()
     with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED) as z:
         for name, content in documents.items():
@@ -749,7 +715,7 @@ def render():
     if st.button("生成锋铭单证", type="primary", key="fm_generate"):
         st.session_state.pop("fm_result", None)
         try:
-            with st.spinner("正在打包五份单证…"):
+            with st.spinner("正在打包单证…"):
                 documents, archive = generate_documents(data, inputs, content)
             st.session_state["fm_result"] = (signature, documents, archive)
         except Exception as exc:
