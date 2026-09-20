@@ -8,6 +8,7 @@ import renchuang
 import zhijia
 import huizhou_zhijia  # 新增引入
 import fengming
+import kangming
 
 st.set_page_config(
     page_title="出口单证生成平台",
@@ -17,6 +18,7 @@ st.set_page_config(
 )
 
 FACTORIES = {
+    "东莞康铭 · 高尔夫配件/模具/汽车外壳": {"page": "kangming", "desc": "分别上传发票、装箱单 → 生成出口单证"},
     "东莞致嘉 · 五金冲压模具/检具等": {"page": "zhijia", "desc": "上传发票 → 生成 申报要素 / 成交确认书 / 出口报关单"},
     "惠州致嘉 · 五金冲压模具/检具等": {"page": "huizhou_zhijia", "desc": "上传发票 → 生成 申报要素 / 成交确认书 / 出口报关单 (惠州工厂专用)"}, # 新增这一行
     "宜章仁创 · 液晶显示屏单证": {"page": "renchuang", "desc": "上传装箱单/购销合同 → 生成 申报要素 / 出口报关单"},
@@ -24,6 +26,7 @@ FACTORIES = {
 }
 
 FUNCTION_MAP = {
+    "kangming": kangming.render,
     "fengming": fengming.render,
     "zhijia": zhijia.render,
     "huizhou_zhijia": huizhou_zhijia.render, # 新增这一行映射
