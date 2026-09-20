@@ -9,7 +9,7 @@ import math
 import re
 import zipfile
 
-import pandas as pd
+import pandas as pd 
 from docx import Document
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.oxml import OxmlElement
@@ -293,9 +293,10 @@ def read_invoice_data(source):
                 pack_type=pack_type, net_weight=net_weight, gross_weight=gross_weight)
 
 
-def _font(run, size=10):
+def _font(run, size=10, bold=False):
     run.font.name = "Times New Roman"
     run.font.size = Pt(size)
+    run.font.bold = bold
     run._element.get_or_add_rPr().get_or_add_rFonts().set(qn("w:eastAsia"), "宋体")
 
 
@@ -335,6 +336,35 @@ def _replace(doc, values):
         raise ValueError("文档模板存在未填写字段。")
 
 
+def _set_table_borders(table):
+    """设置表格边框：只保留竖线，去掉横线。"""
+    tbl = table._tbl
+    tblPr = tbl.tblPr
+    # 查找或创建 tblBorders
+    tblBorders = tblPr.find(qn('w:tblBorders'))
+    if tblBorders is None:
+        tblBorders = OxmlElement('w:tblBorders')
+        tblPr.append(tblBorders)
+    # 清除现有边框设置
+    for child in list(tblBorders):
+        tblBorders.remove(child)
+    # 设置边框：上下内横线为 none，左右内竖线为 single
+    for border_name in ['top', 'bottom', 'insideH']:
+        border = OxmlElement(f'w:{border_name}')
+        border.set(qn('w:val'), 'none')
+        border.set(qn('w:sz'), '0')
+        border.set(qn('w:space'), '0')
+        border.set(qn('w:color'), 'auto')
+        tblBorders.append(border)
+    for border_name in ['left', 'right', 'insideV']:
+        border = OxmlElement(f'w:{border_name}')
+        border.set(qn('w:val'), 'single')
+        border.set(qn('w:sz'), '4')
+        border.set(qn('w:space'), '0')
+        border.set(qn('w:color'), 'auto')
+        tblBorders.append(border)
+
+
 def create_declaration_elements(data):
     doc = Document()
     normal = doc.styles["Normal"]
@@ -363,6 +393,7 @@ def create_declaration_elements(data):
 def create_sales_contract(data, inputs):
     doc = Document(STATIC_DIR / "购销合同模板.docx")
     table = doc.tables[0]
+    _set_table_borders(table)
     prototype = table.rows[3]._tr
     anchor = prototype
     for index, item in enumerate(data["items"], 1):
@@ -370,10 +401,16 @@ def create_sales_contract(data, inputs):
         anchor.addnext(node)
         anchor = node
         row = table.rows[3 + index]
-        values = {0: str(index), 2: item["name"], 3: f"{_fmt(item['qty'])}{item['unit']}",
-                  4: f"{data['currency']}\n{_fmt(item['price'])}",
-                  5: f"{data['currency']}\n{item['amount']:.2f}",
-                  7: f"成交方式:{data['incoterms']}" if index == len(data["items"]) else ""}
+        # 币种只在第一行商品行显示
+        currency_line = data['currency'] + "\n" if index == 1 else ""
+        values = {
+            0: str(index),
+            2: item["name"],
+            3: f"{_fmt(item['qty'])}{item['unit']}",
+            4: f"{currency_line}{_fmt(item['price'])}",
+            5: f"{currency_line}{item['amount']:.2f}",
+            7: f"成交方式:{data['incoterms']}" if index == len(data["items"]) else "",
+        }
         for col, value in values.items():
             cell = row.cells[col]
             cell.text = value
@@ -382,7 +419,7 @@ def create_sales_contract(data, inputs):
                 p.paragraph_format.space_after = Pt(3)
                 p.paragraph_format.space_before = Pt(3)
                 for run in p.runs:
-                    _font(run, 9)
+                    _font(run, 8, bold=True)
         row.height = None
         cant_split = OxmlElement("w:cantSplit")
         row._tr.get_or_add_trPr().append(cant_split)
@@ -475,7 +512,7 @@ def create_export_declaration(data, inputs):
     return stream.getvalue()
 
 
-def generate_documents(data, inputs):
+def generate_documents(data, inputs, source_bytes=None, source_filename=None):
     for field, label in (("buyer_name", "合同买方"), ("consignee", "境外收货人"),
                          ("trade_country", "贸易国"), ("contract_date", "合同日期")):
         _required(inputs.get(field), label)
@@ -485,6 +522,9 @@ def generate_documents(data, inputs):
         f"锋铭_购销合同_{stamp}.docx": create_sales_contract(data, inputs),
         f"锋铭_出口报关单_{stamp}.xlsx": create_export_declaration(data, inputs),
     }
+    if source_bytes:
+        ext = Path(source_filename).suffix if source_filename else ".xlsx"
+        documents[f"锋铭_发票及装箱单_{stamp}{ext}"] = source_bytes
     # ZIP只包含生成结果；使用内存缓冲区，避免并发请求覆盖临时文件。
     archive = BytesIO()
     with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED) as z:
@@ -550,8 +590,8 @@ def render():
     if st.button("生成锋铭单证", type="primary", key="fm_generate"):
         st.session_state.pop("fm_result", None)
         try:
-            with st.spinner("正在生成三份单证…"):
-                documents, archive = generate_documents(data, inputs)
+            with st.spinner("正在生成单证压缩包…"):
+                documents, archive = generate_documents(data, inputs, content, uploaded.name)
             st.session_state["fm_result"] = (signature, documents, archive)
         except Exception as exc:
             st.error(f"生成失败：{exc}")
@@ -559,7 +599,3 @@ def render():
     if result:
         st.download_button("下载锋铭单证 ZIP", result[2],
                            f"锋铭_单证_{data['date']:%Y%m%d}.zip", "application/zip", key="fm_zip")
-        for index, (name, value) in enumerate(result[1].items()):
-            mime = ("application/vnd.openxmlformats-officedocument.wordprocessingml.document" if name.endswith(".docx")
-                    else "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-            st.download_button(name, value, name, mime, key=f"fm_download_{index}")
