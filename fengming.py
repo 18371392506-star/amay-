@@ -2,6 +2,7 @@
 """锋铭出口单证：分别读取发票与装箱单，再填充企业专用模板。"""
 from copy import copy, deepcopy
 from datetime import date, datetime
+from zoneinfo import ZoneInfo
 from decimal import Decimal, InvalidOperation
 from io import BytesIO
 from pathlib import Path
@@ -290,8 +291,7 @@ def read_invoice_data(source):
         amount = _number(get("amount"), f"{name}金额")
         if qty <= 0 or qty != qty.to_integral_value():
             raise ValueError(f"商品【{name}】数量必须为正整数。")
-        if abs(qty * price - amount) > MONEY_TOLERANCE:
-            raise ValueError(f"商品【{name}】数量×单价与金额不一致，请核对发票。")
+        # 金额以发票为准；报关单价单独用金额除以数量。
         items.append(dict(source_name=name, name=rule["name"], category=category,
                           model=model, qty=qty, price=price, amount=amount,
                           code=rule["code"], unit=_item_unit(get("unit") if "unit" in inv_cols else "", get("qty"), rule["unit"])))
@@ -358,7 +358,7 @@ def read_invoice_data(source):
     return dict(company_name=COMPANY, date=invoice_date, destination=destination,
                 contract_number=contract_number, currency=currency, incoterms=incoterms,
                 items=items, total_amount=total_amount, total_packages=total_packages,
-                pack_type=pack_type, net_weight=net_weight, gross_weight=gross_weight)
+                pack_type=pack_type, packages_text=packages_text, net_weight=net_weight, gross_weight=gross_weight)
 
 
 def _font(run, size=10):
@@ -403,7 +403,9 @@ def _replace(doc, values):
         raise ValueError("文档模板存在未填写字段。")
 
 
-def create_declaration_elements(data):
+def create_declaration_elements(data, benefit=None):
+    if benefit is not None and benefit not in {"享惠", "不享惠"}:
+        raise ValueError("请选择享惠或不享惠。")
     doc = Document()
     normal = doc.styles["Normal"]
     normal.font.size = Pt(10.5)
@@ -423,7 +425,10 @@ def create_declaration_elements(data):
             p = doc.add_paragraph("商品描述：" + rule["description"])
             p.paragraph_format.keep_with_next = True
         model_type = item["model"] if item["model"].endswith("型") else item["model"] + "型"
-        doc.add_paragraph("申报要素：" + rule["elements"].format(model=item["model"], model_type=model_type))
+        elements = rule["elements"].format(model=item["model"], model_type=model_type)
+        if benefit is not None:
+            elements = re.sub(r"(出口享惠：|\|)(?:不享惠|享惠)", lambda m: m.group(1) + benefit, elements)
+        doc.add_paragraph("申报要素：" + elements)
     stream = BytesIO()
     doc.save(stream)
     return stream.getvalue()
@@ -440,7 +445,7 @@ def create_sales_contract(data, inputs):
         columns[2].append(item["name"])
         columns[3].append(f"{_fmt(item['qty'])}{item['unit']}")
         columns[4].append(_fmt(item["price"]))
-        columns[5].append(_fmt(item["amount"]))
+        columns[5].append(f"{item['amount']:.2f}")
     columns[7] = [f"成交方式:{data['incoterms']}"]
     for col, lines in columns.items():
         cell = row.cells[col]
@@ -507,6 +512,7 @@ def create_export_declaration(data, inputs):
         "A6": "合同协议号\n" + data["contract_number"],
         "D6": "贸易国（地区）\n" + inputs["trade_country"],
         "F6": "运抵国（地区）\n" + data["destination"],
+        "A9": "标记唛码及备注 :" + data.get("packages_text", ""),
         "A7": "包装种类:" + inputs.get("pack_type", data["pack_type"]),
         "D7": f"件数:{data['total_packages']}件",
         "E7": f"毛重（千克):{_fmt(data['gross_weight'])}",
@@ -523,10 +529,10 @@ def create_export_declaration(data, inputs):
     styles = [copy(ws.cell(11, col)._style) for col in range(1, 12)]
     for index, item in enumerate(data["items"]):
         row = 11 + index
-        # 报关单字段为“商品名称及规格型号”，同时写入型号以便核对。
+        # 按要求只填写商品名称，单价由发票金额除以数量。
         name = item["name"]
         values = [index + 1, item["code"], name, f"{_fmt(item['qty'])}{item['unit']}",
-                  float(item["price"]), float(item["amount"]), currencies[data["currency"]],
+                  float(item["amount"] / item["qty"]), float(item["amount"]), currencies[data["currency"]],
                   "中国", data["destination"], "东莞", "照章征税"]
         for col, value in enumerate(values, 1):
             cell = ws.cell(row, col, value)
@@ -645,7 +651,7 @@ def generate_documents(data, inputs, source):
         _required(inputs.get(field), label)
     stamp = data["date"].strftime("%Y%m%d")
     documents = {
-        f"锋铭_申报要素_{stamp}.docx": create_declaration_elements(data),
+        f"锋铭_申报要素_{stamp}.docx": create_declaration_elements(data, inputs.get("benefit", "不享惠")),
         f"锋铭_购销合同_{stamp}.docx": create_sales_contract(data, inputs),
         f"锋铭_出口报关单_{stamp}.xlsx": create_export_declaration(data, inputs),
     }
@@ -700,6 +706,7 @@ def render():
     trade_country = c2.text_input("贸易国（合同买方所在国家/地区）", "中国香港", key="fm_trade_country")
     buyer_address = st.text_input("买方地址", DEFAULT_BUYER_ADDRESS, key="fm_buyer_address")
     buyer_phone = st.text_input("买方电话", "00852-39622458", key="fm_buyer_phone")
+    benefit = st.radio("出口享惠（统一应用于所有商品）", ["不享惠", "享惠"], key="fm_benefit")
     c3, c4, c5 = st.columns(3)
     freight = c3.text_input("运费", key="fm_freight")
     insurance = c4.text_input("保费", key="fm_insurance")
@@ -707,7 +714,7 @@ def render():
     inputs = dict(buyer_name=buyer.strip(), consignee=consignee.strip(), contract_date=contract_date,
                   trade_country=trade_country.strip(), buyer_address=buyer_address.strip(),
                   buyer_phone=buyer_phone.strip(), freight=freight.strip(), insurance=insurance.strip(),
-                  other_fees=other_fees.strip(), pack_type=data["pack_type"])
+                  other_fees=other_fees.strip(), benefit=benefit, pack_type=data["pack_type"])
     signature = (fingerprint, tuple((k, str(v)) for k, v in inputs.items()))
     previous = st.session_state.get("fm_result")
     if previous and previous[0] != signature:
@@ -723,4 +730,4 @@ def render():
     result = st.session_state.get("fm_result")
     if result:
         st.download_button("下载锋铭单证 ZIP", result[2],
-                           f"锋铭_单证_{data['date']:%Y%m%d}.zip", "application/zip", key="fm_zip")
+                           f"锋铭_单证_{datetime.now(ZoneInfo('Asia/Shanghai')):%Y%m%d}.zip", "application/zip", key="fm_zip")
