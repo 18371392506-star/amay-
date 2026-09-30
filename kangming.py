@@ -105,11 +105,8 @@ def generate(data, inputs, invoice, packing):
     customs.active['A3']='境内发货人:'+IDENTITY
     customs.active['A5']='生产销售单位\n'+IDENTITY
     c=BytesIO(); customs.save(c)
-    contract=Document(BytesIO(fm.create_sales_contract(data, inputs)))
-    fm._replace(contract, {fm.COMPANY:COMPANY, '东莞市长安镇乌沙':'广东省东莞市松山湖园区至诚路12号8栋105室', '0769-81666101':'0769-22220283'})
-    co=BytesIO(); contract.save(co)
     stamp=datetime.now(ZoneInfo('Asia/Shanghai')).strftime('%Y%m%d')
-    docs={f'康铭_申报要素_{stamp}.docx':out.getvalue(), f'康铭_出口报关单_{stamp}.xlsx':c.getvalue(), f'康铭_购销合同_{stamp}.docx':co.getvalue()}
+    docs={f'康铭_申报要素_{stamp}.docx':out.getvalue(), f'康铭_出口报关单_{stamp}.xlsx':c.getvalue()}
     for label, content in [('发票',invoice),('装箱单',packing)]:
         ext='xlsx' if content.startswith(b'PK\x03\x04') else 'xls'
         docs[f'康铭_{label}_{stamp}.{ext}']=content
@@ -127,8 +124,13 @@ def render():
     try: data=read_data(invoice.getvalue(),packing.getvalue())
     except Exception as exc: st.error(str(exc)); return
     st.success(f"读取成功：{len(data['items'])} 项商品，{data['total_amount']:.2f} {data['currency']}，{data['total_packages']} 箱。")
-    for n,i in enumerate(data['items']):
-        i['benefit']=st.selectbox(f"{n+1}. {i['name']} / {i['model']}（{i['qty']} {i['unit']}）",['享惠','不享惠'], index=0 if i['benefit']=='享惠' else 1, key=f"km_benefit_{n}_{i['name']}_{i['model']}")
+    benefit = st.selectbox(
+        '出口享惠',
+        ['享惠', '不享惠'],
+        key='km_global_benefit'
+    )
+    for i in data['items']:
+        i['benefit'] = benefit
     inputs={}
     for key,label,default in [('consignee','境外收货人','CANGMING 3D TECH CO.,LIMITED'),('buyer_name','合同买方（请核实）',''),('trade_country','贸易国','中国香港'),('buyer_address','买方地址',''),('buyer_phone','买方电话',''),('pack_type','包装种类',data['pack_type']),('freight','运费',''),('insurance','保费',''),('other_fees','杂费','')]:
         inputs[key]=st.text_input(label,value=default,key='km_'+key).strip()
@@ -140,3 +142,9 @@ def render():
             stamp=datetime.now(ZoneInfo('Asia/Shanghai')).strftime('%Y%m%d')
             st.download_button('下载康铭单证 ZIP',result,f'康铭_单证_{stamp}.zip','application/zip',key='km_download')
         except Exception as exc: st.error(str(exc))
+
+
+# 康铭专用规则：
+# 报关单商品列顺序：
+# 商品名称及规格型号 | 数量及单位 | 净重(KG) | 单价 | 总价
+# 净重读取自发票净重列；金额读取发票；单价=总价/数量
